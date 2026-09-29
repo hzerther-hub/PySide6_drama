@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
-from ..core import db
+from ..core import config, db
 from ..core.i18n import LANGS, set_language, tr
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
@@ -27,6 +27,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(tr("app_title"))
         self.resize(1360, 860)
+        from PySide6.QtGui import QIcon
+        _logo = config.ROOT_DIR / "app" / "assets" / "logo.png"
+        if _logo.exists():
+            self.setWindowIcon(QIcon(str(_logo)))
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -38,8 +42,19 @@ class MainWindow(QMainWindow):
         top.setStyleSheet("background:#202126;border-bottom:1px solid #2c2e35;")
         tlay = QHBoxLayout(top)
         tlay.setContentsMargins(20, 10, 20, 10)
-        logo = QLabel("易  易好短剧 · PySide6")
+        from PySide6.QtGui import QPixmap
+        _logo_path = config.ROOT_DIR / "app" / "assets" / "logo.png"
+        logo_lab = QLabel()
+        if _logo_path.exists():
+            pm = QPixmap(str(_logo_path)).scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_lab.setPixmap(pm)
+        else:
+            logo_lab.setText("易")
+        logo_lab.setStyleSheet("background:transparent;border:none;")
+        logo = QLabel("易好短剧")
         logo.setStyleSheet("color:#f2f3f5;font-weight:700;font-size:16px;background:transparent;border:none;")
+        tlay.addWidget(logo_lab)
+        tlay.addSpacing(4)
         tlay.addWidget(logo)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}

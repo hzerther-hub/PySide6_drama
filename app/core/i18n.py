@@ -24,7 +24,7 @@ LANG_OUTPUT_NAME = {
 _current = "zh"
 
 Z = {  # 中文(基准)
- "app_title": "易好短剧 · PySide6 版", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具",
+ "app_title": "易好短剧", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具",
  "projects": "项目启动台", "tagline": "从一个创意到一部短剧,AI 全流程为你代工",
  "stat_projects": "{} 个项目", "stat_running": "{} 进行中", "stat_styles": "{} 种视觉风格",
  "filter_all": "全部", "filter_pending": "待开始", "filter_running": "进行中", "filter_done": "已完成",
@@ -87,7 +87,7 @@ def _t(src: dict, **over) -> dict:
 T: dict[str, dict] = {"zh": Z}
 
 T["en"] = _t(Z,
- app_title="Yihao Shorts (PySide6)", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger",
+ app_title="Yihao Shorts", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger",
  projects="Project Launchpad", tagline="From an idea to a short drama — AI handles the whole pipeline",
  stat_projects="{} projects", stat_running="{} in progress", stat_styles="{} visual styles",
  filter_all="All", filter_pending="To start", filter_running="In progress", filter_done="Completed",
@@ -138,7 +138,7 @@ T["en"] = _t(Z,
  sample_rate="Sample rate", movie_quality="cinematic",
 )
 
-T["ja"] = _t(T["en"], app_title="易好短劇(PySide6 版)", nav_projects="プロジェクト", nav_settings="設定", nav_merger="結合ツール",
+T["ja"] = _t(T["en"], app_title="易好短劇", nav_projects="プロジェクト", nav_settings="設定", nav_merger="結合ツール",
  projects="プロジェクト", tagline="アイデアからショートドラマまで、AI が全工程を代行",
  stat_projects="{} プロジェクト", stat_running="{} 進行中", stat_styles="{} スタイル", filter_all="全部", filter_pending="未着手",
  filter_running="進行中", filter_done="完了", sort_recent="最近の更新", search="検索", new_project="新規プロジェクト",
@@ -156,7 +156,7 @@ T["ja"] = _t(T["en"], app_title="易好短劇(PySide6 版)", nav_projects="プ�
  movie_quality="映画的クオリティ",
 )
 
-T["ko"] = _t(T["en"], app_title="이하오 숏드라마(PySide6)", nav_projects="프로젝트", nav_settings="설정", nav_merger="병합 도구",
+T["ko"] = _t(T["en"], app_title="이하오 숏드라마", nav_projects="프로젝트", nav_settings="설정", nav_merger="병합 도구",
  projects="프로젝트 대시보드", tagline="아이디어에서 숏드라마까지, AI가 전 과정을 담당",
  stat_projects="{} 프로젝트", stat_running="{} 진행 중", stat_styles="{} 스타일", filter_all="전체", filter_pending="시작 전",
  filter_running="진행 중", filter_done="완료", sort_recent="최근 업데이트", search="검색", new_project="새 프로젝트",

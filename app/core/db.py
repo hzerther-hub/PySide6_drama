@@ -327,6 +327,13 @@ def init_db() -> None:
         db.execute(stmt)
     for stmt in INDEXES:
         db.execute(stmt)
+    # 增量加列(幂等,对齐原版 sqlite-schema.ts 老库迁移做法)
+    for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
+                "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL"):
+        try:
+            db.execute(col)
+        except Exception:  # noqa: BLE001
+            pass
     # 风格种子(幂等:存在则跳过)
     for name, value, order, wt, prompt, desc in STYLE_PRESETS:
         db.execute(

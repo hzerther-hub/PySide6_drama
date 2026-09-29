@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QPushButton,
+                               QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
                                QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..agents import prompts
 from ..ai import registry
+from ..ai.registry import SVC_CN
 from ..ai.image_client import test_config as img_test
 from ..ai.text_client import test_config as text_test
 from ..ai.tts_client import test_config as tts_test
@@ -69,7 +70,24 @@ class SettingsDialog(QDialog):
         q_lay.addLayout(row)
         lay.addWidget(quick)
 
+        # 手动模板(对齐原版:选服务类型直接填推荐 provider/base URL/model)
+        manual = W.make_card()
+        m_lay = QVBoxLayout(manual)
+        m_lay.setContentsMargins(14, 12, 14, 12)
+        m_lay.addWidget(W.h2("手动模板"))
+        m_lay.addWidget(W.muted("选择服务类型后,直接用模板填充推荐的 `provider / base URL / model`。"))
+        chips = QHBoxLayout()
+        for st in registry.SERVICE_TYPES:
+            b = QPushButton(tr(SVC_LABEL[st]))
+            b.setStyleSheet("QPushButton{border-radius:14px;padding:5px 18px;background:rgba(128,128,128,30);font-weight:600;}")
+            b.clicked.connect(lambda _=False, s=st: self._add_service(s))
+            chips.addWidget(b)
+        chips.addStretch(1)
+        m_lay.addLayout(chips)
+        lay.addWidget(manual)
+
         self.svc_tabs = QTabWidget()
+        self._svc_lists: dict[str, QListWidget] = {}
         for st in registry.SERVICE_TYPES:
             tab = QWidget()
             t_lay = QVBoxLayout(tab)
@@ -83,7 +101,8 @@ class SettingsDialog(QDialog):
             bar.addWidget(add)
             t_lay.addLayout(bar)
             listw = QListWidget()
-            listw.setObjectName(f"svc_{st}")
+            self._svc_lists[st] = listw
+            listw.itemDoubleClicked.connect(self._edit_service)
             t_lay.addWidget(listw)
             self.svc_tabs.addTab(tab, tr(SVC_LABEL[st]))
             self._fill_services(st)
@@ -91,7 +110,7 @@ class SettingsDialog(QDialog):
         return w
 
     def _fill_services(self, st: str):
-        listw = self.findChild(QListWidget, f"svc_{st}")
+        listw = self._svc_lists.get(st)
         if not listw:
             return
         listw.clear()
@@ -99,10 +118,10 @@ class SettingsDialog(QDialog):
             status = tr("configured") if r["api_key"] else "no key"
             default = " · 默认" if r["is_default"] else ""
             active = "" if r["is_active"] else " · " + tr("stopped")
-            item = QListWidgetItem(f"[{r['provider']}] {r['model']}  ·  {status}{default}{active}")
+            name = r["remark"] or r["provider"]
+            item = QListWidgetItem(f"{name}  ·  {r['model']}  ·  P{r['priority'] or 0}  ·  {status}{default}{active}")
             item.setData(Qt.UserRole, dict(r))
             listw.addItem(item)
-        listw.itemDoubleClicked.connect(lambda item: self._edit_service(item))
 
     def _apply_yihao(self):
         key = self.yihao_key.text().strip()
@@ -114,33 +133,25 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, tr("write_config"), "\n".join(created))
 
     def _add_service(self, st: str):
-        from PySide6.QtWidgets import QInputDialog
-        presets = registry.PROVIDER_PRESETS.get(st, [])
-        names = [p["name"] for p in presets]
-        name, ok = QInputDialog.getItem(self, tr("add"), tr("provider"), names, 0, False)
-        if not ok:
-            return
-        preset = next(p for p in presets if p["name"] == name)
-        model, ok2 = QInputDialog.getItem(self, tr("model"), tr("model"), preset["models"], 0, True)
-        if not ok2:
-            return
-        dlg = _ServiceDialog(st, preset, model, self)
+        dlg = ServiceDialog(st, self)
         if dlg.exec() == QDialog.Accepted:
-            data = dlg.data()
-            registry.add_config(st, data["provider"], data["base_url"], data["model"],
-                                data["api_key"], data["is_default"])
+            d = dlg.data()
+            registry.add_config(st, d["provider"], d["base_url"], d["model"],
+                                api_key=d["api_key"], remark=d["name"],
+                                priority=d["priority"], models=d["models"],
+                                temperature=d["temperature"])
             self._fill_services(st)
 
     def _edit_service(self, item: QListWidgetItem):
-        cfg = item.data(Qt.UserRole)
+        cfg = dict(item.data(Qt.UserRole))
         st = cfg["service_type"]
-        dlg = _ServiceDialog(st, {"provider": cfg["provider"], "base_url": cfg["base_url"]},
-                             cfg["model"], self, existing=dict(cfg))
+        dlg = ServiceDialog(st, self, existing=cfg)
         if dlg.exec() == QDialog.Accepted:
-            data = dlg.data()
-            registry.update_config(cfg["id"], provider=data["provider"], base_url=data["base_url"],
-                                    model=data["model"], api_key=data["api_key"],
-                                    is_default=data["is_default"], is_active=data["is_active"])
+            d = dlg.data()
+            registry.update_config(cfg["id"], provider=d["provider"], base_url=d["base_url"],
+                                    model=d["model"], api_key=d["api_key"],
+                                    remark=d["name"], priority=d["priority"],
+                                    models=d["models"], temperature=d["temperature"])
             self._fill_services(st)
 
     # ── 通用(语言 15 种 + 主题) ──
@@ -318,8 +329,8 @@ class SettingsDialog(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
-        lay.addWidget(W.h2(f"易好短剧 PySide6 版 · {tr('version')} {config.APP_VERSION}"))
-        lay.addWidget(W.muted("按「易好短剧」(Yihao Drama)功能 100% 复刻的 PySide6 桌面实现。"))
+        lay.addWidget(W.h2(f"易好短剧 · {tr('version')} {config.APP_VERSION}"))
+        lay.addWidget(W.muted("「易好短剧」(Yihao Drama) 的 PySide6 桌面实现,功能对齐原版。"))
         lay.addWidget(W.muted(f"语言 / Languages: {len(LANGS)}(中文/EN/日本語/한국어/Français/Deutsch/Italiano/Português/Español/Tiếng Việt/Türkçe/العربية/हिन्दी/Bahasa Indonesia/ภาษาไทย)"))
         lay.addWidget(W.muted("核心:10 Agents · 20 风格预设 · 无损合并(easymerger) · 同款复刻(video-clone-lite) · FFmpeg 拼接+旁白混音"))
         check = QPushButton(tr("check_update"))
@@ -343,56 +354,242 @@ class SettingsDialog(QDialog):
             self.update_lab.setText(f"{e}"[:120])
 
 
-class _ServiceDialog(QDialog):
-    def __init__(self, st: str, preset: dict, model: str, parent=None, existing: dict | None = None):
+class _FlowLayout(QWidget):
+    """简易流式布局(模板芯片/模型标签换行用)。"""
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._st = st
-        self.setWindowTitle(f"{tr(SVC_LABEL[st])} · {preset.get('provider','')}")
-        self.resize(460, 240)
-        self._preset = preset
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(8)
+
+    def add(self, w: QWidget):
+        self._lay.addWidget(w)
+
+    def clear(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+
+def _muted(text: str) -> QLabel:
+    return W.muted(text)
+
+
+class ModelChipsEditor(QWidget):
+    """多模型标签编辑器(对齐原版):首位为默认模型;点标签置顶;× 删除;输入框支持逗号/换行批量。"""
+    changed = Signal()
+
+    def __init__(self, models=None):
+        super().__init__()
+        self.models = [m for m in (models or []) if m]
         lay = QVBoxLayout(self)
-        f = QFormLayout()
-        self.provider = QLineEdit(preset.get("provider", ""))
-        self.base_url = QLineEdit(preset.get("base_url", ""))
-        self.model_edit = QLineEdit(model)
-        self.api_key = QLineEdit(existing.get("api_key", "") if existing else "")
-        self.api_key.setEchoMode(QLineEdit.Password)
-        self.default_cb = QCheckBox(tr("enabled") + " / " + "默认")
-        self.active_cb = QCheckBox(tr("enabled"))
-        self.active_cb.setChecked(bool(existing["is_active"]) if existing else True)
-        f.addRow(tr("provider"), self.provider)
-        f.addRow(tr("base_url"), self.base_url)
-        f.addRow(tr("model"), self.model_edit)
-        f.addRow(tr("api_key"), self.api_key)
-        f.addRow("", self.default_cb)
-        f.addRow("", self.active_cb)
-        lay.addLayout(f)
-        test_btn = QPushButton(tr("test"))
-        test_btn.clicked.connect(self._test)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.flow = _FlowLayout()
+        lay.addWidget(self.flow)
         row = QHBoxLayout()
-        row.addWidget(test_btn)
-        row.addStretch(1)
-        row.addWidget(btns)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("输入模型名,回车添加(支持逗号/换行批量粘贴)")
+        self.input.returnPressed.connect(self._add_from_input)
+        add_btn = QPushButton("新增")
+        add_btn.clicked.connect(self._add_from_input)
+        row.addWidget(self.input, 1)
+        row.addWidget(add_btn)
         lay.addLayout(row)
+        lay.addWidget(_muted("首位为默认模型;点击标签可置顶,输入框支持逗号/换行批量粘贴"))
+        self._render()
+
+    def _render(self):
+        self.flow.clear()
+        for i, m in enumerate(list(self.models)):
+            chip = QPushButton(m + ("  默认" if i == 0 else ""))
+            chip.setToolTip("点击置顶设为默认")
+            chip.setStyleSheet(
+                "QPushButton{border-radius:12px; padding:3px 10px; font-size:12px;}"
+                + ("QPushButton{background:#4b6ef5;color:white;font-weight:700;border:none;}"
+                   if i == 0 else "QPushButton{background:rgba(128,128,128,35);}"))
+            chip.clicked.connect(lambda _=False, idx=i: self._promote(idx))
+            self.flow.add(chip)
+            x = QPushButton("×")
+            x.setFixedSize(22, 22)
+            x.setStyleSheet("QPushButton{border:none;background:transparent;color:#888;font-weight:700;}")
+            x.clicked.connect(lambda _=False, idx=i: self._remove(idx))
+            self.flow.add(x)
+
+    def _promote(self, idx: int):
+        if idx <= 0:
+            return
+        self.models.insert(0, self.models.pop(idx))
+        self._render()
+        self.changed.emit()
+
+    def _remove(self, idx: int):
+        self.models.pop(idx)
+        self._render()
+        self.changed.emit()
+
+    def _add_from_input(self):
+        import re as _re
+        for part in _re.split(r"[,\n;，；]", self.input.text()):
+            p = part.strip()
+            if p and p not in self.models:
+                self.models.append(p)
+        self.input.clear()
+        self._render()
+        self.changed.emit()
+
+    def set_models(self, models):
+        self.models = [m for m in (models or []) if m]
+        self._render()
+        self.changed.emit()
+
+
+class ServiceDialog(QDialog):
+    """添加/编辑 AI 服务(对齐原版「添加文本服务」界面):
+
+    模板快选 → 配置名称/服务商/优先级/API Key/Base URL/多模型标签/Temperature → 测试配置/保存。
+    """
+
+    def __init__(self, st: str, parent=None, existing=None):
+        super().__init__(parent)
+        import json as _json
+        self._st = st
+        self._existing = existing
+        cn = SVC_CN[st]
+        self.setWindowTitle(("编辑" if existing else "添加") + cn + "服务")
+        self.resize(560, 760)
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.addWidget(W.h2(("编辑" if existing else "添加") + cn + "服务"))
+        head.addStretch(1)
+        head.addWidget(W.tag(cn))
+        root.addLayout(head)
+        root.addWidget(_muted("推荐先选择模板,系统会自动填入更合理的 `Base URL` 与默认模型。"))
+
+        self.tpl_flow = _FlowLayout()
+        for p in registry.PROVIDER_PRESETS.get(st, []):
+            b = QPushButton(p["name"])
+            b.setStyleSheet("QPushButton{border-radius:14px;padding:5px 14px;background:rgba(128,128,128,30);font-weight:600;}")
+            b.clicked.connect(lambda _=False, pr=p: self._apply_template(pr))
+            self.tpl_flow.add(b)
+        root.addWidget(self.tpl_flow)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        self.name_edit = QLineEdit()
+        form.addRow("配置名称", self.name_edit)
+        self.provider_combo = QComboBox()
+        self.provider_combo.setEditable(True)
+        seen = []
+        for p in registry.PROVIDER_PRESETS.get(st, []):
+            if p["provider"] not in seen:
+                seen.append(p["provider"])
+        self.provider_combo.addItems(seen)
+        form.addRow("服务商", self.provider_combo)
+        self.priority_spin = QSpinBox()
+        self.priority_spin.setRange(-99, 99)
+        self.priority_spin.setValue(0)
+        form.addRow("优先级", self.priority_spin)
+        form.addRow("", _muted("数值越高越优先。工作台默认使用同类型里优先级最高的启用配置。"))
+        self.api_key = QLineEdit()
+        self.api_key.setPlaceholderText("sk-...")
+        self.api_key.setEchoMode(QLineEdit.Password)
+        form.addRow("API Key", self.api_key)
+        self.base_url = QLineEdit()
+        form.addRow("Base URL", self.base_url)
+        self.models_editor = ModelChipsEditor()
+        form.addRow("模型", self.models_editor)
+        self.temperature = QLineEdit()
+        self.temperature.setPlaceholderText("如 0.6")
+        form.addRow("Temperature (留空跟随服务默认)", self.temperature)
+        form.addRow("", _muted("部分模型强制固定温度(如 kimi-k2 只允许 0.6),遇 invalid temperature 错误时在此填入对应值"))
+        root.addLayout(form)
+        root.addStretch(1)
+
+        bottom = QHBoxLayout()
+        test_btn = QPushButton("测试配置")
+        test_btn.setStyleSheet("QPushButton{color:#e0794b;border:none;font-weight:700;}")
+        test_btn.clicked.connect(self._test)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        save = W.primary_btn("保存")
+        save.clicked.connect(self._save)
+        bottom.addWidget(test_btn)
+        bottom.addStretch(1)
+        bottom.addWidget(cancel)
+        bottom.addWidget(save)
+        root.addLayout(bottom)
         self.test_lab = QLabel("")
-        lay.addWidget(self.test_lab)
+        self.test_lab.setWordWrap(True)
+        root.addWidget(self.test_lab)
+
+        if existing:
+            self._prefill(_json)
+
+    def _apply_template(self, p: dict):
+        self.name_edit.setText(f"{p['name']}-{SVC_CN[self._st]}")
+        i = self.provider_combo.findText(p["provider"])
+        if i >= 0:
+            self.provider_combo.setCurrentIndex(i)
+        else:
+            self.provider_combo.setCurrentText(p["provider"])
+        self.base_url.setText(p["base_url"])
+        self.models_editor.set_models(list(p["models"]))
+
+    def _prefill(self, _json):
+        e = self._existing
+        self.name_edit.setText(e.get("remark") or "")
+        i = self.provider_combo.findText(e["provider"])
+        self.provider_combo.setCurrentIndex(i if i >= 0 else 0)
+        if i < 0:
+            self.provider_combo.setCurrentText(e["provider"])
+        self.priority_spin.setValue(int(e.get("priority") or 0))
+        self.api_key.setText(e.get("api_key") or "")
+        self.base_url.setText(e.get("base_url") or "")
+        models = _json.loads(e["models"]) if e.get("models") else [e["model"]]
+        self.models_editor.set_models(models)
+        if e.get("temperature") is not None:
+            self.temperature.setText(str(e["temperature"]))
+
+    def _collect(self) -> dict:
+        temp_raw = self.temperature.text().strip()
+        temperature = None
+        if temp_raw:
+            try:
+                temperature = float(temp_raw)
+            except ValueError:
+                pass
+        models = self.models_editor.models or [""]
+        return {"service_type": self._st,
+                "name": self.name_edit.text().strip(),
+                "provider": self.provider_combo.currentText().strip(),
+                "base_url": self.base_url.text().strip(),
+                "api_key": self.api_key.text().strip(),
+                "priority": self.priority_spin.value(),
+                "models": models,
+                "model": models[0],
+                "temperature": temperature}
 
     def _test(self):
-        cfg = self.data()
-        ok, msg = TESTERS[cfg["service_type"]](cfg)
-        self.test_lab.setText(("✅ " if ok else "❌ ") + msg[:160])
+        cfg = self._collect()
+        ok, msg = TESTERS[cfg["service_type"]](
+            {"service_type": cfg["service_type"], "provider": cfg["provider"],
+             "base_url": cfg["base_url"], "api_key": cfg["api_key"], "model": cfg["model"]})
+        self.test_lab.setText(("✅ " if ok else "❌ ") + msg[:200])
+
+    def _save(self):
+        data = self._collect()
+        if not data["model"] or not data["base_url"]:
+            self.test_lab.setText("❌ Base URL 与至少一个模型必填")
+            return
+        self.accept()
 
     def data(self) -> dict:
-        return {"service_type": self._st,
-                "provider": self.provider.text().strip(),
-                "base_url": self.base_url.text().strip(),
-                "model": self.model_edit.text().strip(),
-                "api_key": self.api_key.text().strip(),
-                "is_default": self.default_cb.isChecked(),
-                "is_active": self.active_cb.isChecked()}
+        return self._collect()
 
 
 class _StyleDialog(QDialog):

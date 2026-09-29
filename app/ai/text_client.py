@@ -27,6 +27,13 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     msgs.append({"role": "user", "content": prompt})
     body: dict = {"model": cfg["model"], "messages": msgs,
                   "temperature": temperature, "max_tokens": max_tokens}
+    # 配置级 Temperature(对齐原版:留空跟随服务默认;填写则强制覆盖,应对强制温度模型)
+    cfg_temp = cfg.get("temperature")
+    if cfg_temp is not None and cfg_temp != "":
+        try:
+            body["temperature"] = float(cfg_temp)
+        except (TypeError, ValueError):
+            pass
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)

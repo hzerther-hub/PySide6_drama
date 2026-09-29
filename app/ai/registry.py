@@ -6,45 +6,54 @@ from ..core import db
 
 SERVICE_TYPES = ["text", "image", "video", "tts"]
 
-# 手动模板预设(对齐原版 ai_service_providers 种子:provider / base_url / model)
+# 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
     "text": [
-        {"provider": "openai", "name": "OpenAI 兼容", "base_url": "https://api.openai.com/v1",
-         "models": ["gpt-4o", "gpt-4o-mini", "deepseek-chat"]},
-        {"provider": "minimax", "name": "MiniMax 官方", "base_url": "https://api.minimaxi.com/v1",
+        {"name": "Gemini 官方", "provider": "gemini",
+         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+         "models": ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview"]},
+        {"name": "OpenAI 官方", "provider": "openai", "base_url": "https://api.openai.com/v1",
+         "models": ["deepseek-v4-pro", "deepseek-v4-flash", "gpt-5.6-terra"]},
+        {"name": "MiniMax 官方", "provider": "minimax", "base_url": "https://api.minimaxi.com/v1",
          "models": ["MiniMax-M3", "MiniMax-M2.5", "MiniMax-M2"]},
-        {"provider": "gemini", "name": "Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-         "models": ["gemini-2.5-flash", "gemini-2.5-pro"]},
+        {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
+         "models": ["deepseek-v4-pro", "gpt-5.6-terra"]},
     ],
     "image": [
-        {"provider": "agnes", "name": "Agnes 官方", "base_url": "https://apihub.agnes-ai.com",
-         "models": ["agnes-image-2.5-flash", "agnes-image-2.5", "agnes-image-2.1-flash"]},
-        {"provider": "openai", "name": "OpenAI Images", "base_url": "https://api.openai.com/v1",
-         "models": ["gpt-image-1"]},
-        {"provider": "gemini", "name": "Gemini Image", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-         "models": ["gemini-2.5-flash-image"]},
-        {"provider": "volcengine", "name": "火山方舟 Seedream", "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-         "models": ["doubao-seedream-4-0"]},
-        {"provider": "qwen-image", "name": "阿里 qwen-image", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-         "models": ["qwen-image"]},
-        {"provider": "local-faceswap", "name": "本地 InsightFace 人脸融合", "base_url": "http://127.0.0.1:5678",
-         "models": ["inswapper_128"]},
+        {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
+         "models": ["agnes-image-2.5-flash", "agnes-image-2.1-flash", "agnes-image-2.0-flash"]},
+        {"name": "OpenAI 官方", "provider": "openai", "base_url": "https://api.openai.com/v1",
+         "models": ["gpt-image-2"]},
+        {"name": "Gemini 官方", "provider": "gemini",
+         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+         "models": ["gemini-3-pro-image", "gemini-3.1-flash-image"]},
+        {"name": "火山方舟 Doubao Seedream", "provider": "volcengine",
+         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+         "models": ["doubao-seedream-5-0-260128"]},
+        {"name": "阿里 qwen-image", "provider": "qwen-image",
+         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models": ["qwen-image"]},
+        {"name": "本地 InsightFace 人脸融合", "provider": "local-faceswap",
+         "base_url": "http://127.0.0.1:5678", "models": ["inswapper_128"]},
     ],
     "video": [
-        {"provider": "volcengine", "name": "火山方舟 Seedance", "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-         "models": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini"]},
-        {"provider": "minimax", "name": "MiniMax", "base_url": "https://api.minimaxi.com/v1",
-         "models": ["MiniMax-H3"]},
-        {"provider": "aliyun", "name": "阿里云百炼 Wan", "base_url": "https://dashscope.aliyuncs.com",
-         "models": ["wan3.0-video", "wan3.0-video-prime"]},
-        {"provider": "agnes", "name": "Agnes 官方", "base_url": "https://apihub.agnes-ai.com",
+        {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
          "models": ["agnes-video-2.5-flash", "agnes-video-2.5"]},
+        {"name": "火山方舟 Doubao Seedance 2.0", "provider": "volcengine",
+         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+         "models": ["doubao-seedance-2-0-mini-260615", "doubao-seedance-2-0-fast-260128",
+                    "doubao-seedance-2-0-260128"]},
+        {"name": "MiniMax 官方", "provider": "minimax", "base_url": "https://api.minimaxi.com/v1",
+         "models": ["MiniMax-H3"]},
+        {"name": "阿里云百炼 Wan", "provider": "aliyun", "base_url": "https://dashscope.aliyuncs.com",
+         "models": ["wan3.0-video", "wan3.0-video-prime"]},
     ],
     "tts": [
-        {"provider": "volcengine", "name": "豆包语音(火山引擎)", "base_url": "https://openspeech.bytedance.com",
-         "models": ["BV001_streaming", "seed-tts-2.0"]},
+        {"name": "豆包语音(火山引擎)", "provider": "volcengine",
+         "base_url": "https://openspeech.bytedance.com", "models": ["BV001_streaming"]},
     ],
 }
+
+SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音"}
 
 # 各 provider 的可选模型候选(新建时展示;对齐原版设置页展示)
 MODEL_CHOICES: dict[str, list[str]] = {
@@ -63,21 +72,38 @@ def list_configs(service_type: str | None = None) -> list:
 
 
 def add_config(service_type: str, provider: str, base_url: str, model: str,
-               api_key: str = "", is_default: bool = False, remark: str = "") -> int:
+               api_key: str = "", is_default: bool = False, remark: str = "",
+               priority: int = 0, models: list[str] | None = None,
+               temperature: float | None = None) -> int:
     ts = db.now()
     if is_default:
         db.ex("UPDATE ai_service_configs SET is_default=0 WHERE service_type=?", (service_type,))
+    elif not db.q1("SELECT id FROM ai_service_configs WHERE service_type=?", (service_type,)):
+        is_default = True  # 该类型第一条配置自动设为默认
+    import json as _json
     return db.ex(
-        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,1,?,?,?)",
-        (service_type, provider, base_url, api_key, model, 1 if is_default else 0, remark, ts, ts))
+        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?)",
+        (service_type, provider, base_url, api_key, model,
+         1 if is_default else 0, remark, priority,
+         _json.dumps(models or [model], ensure_ascii=False),
+         temperature, ts, ts))
 
 
 def update_config(cid: int, **fields) -> None:
+    import json as _json
     sets, vals = [], []
     for k in ("provider", "base_url", "api_key", "model", "remark"):
         if k in fields and fields[k] is not None:
             sets.append(f"{k}=?"); vals.append(fields[k])
+    if "models" in fields and fields["models"] is not None:
+        sets.append("models=?")
+        vals.append(_json.dumps(fields["models"], ensure_ascii=False))
+    if "temperature" in fields:
+        sets.append("temperature=?")
+        vals.append(fields["temperature"])
+    if "priority" in fields and fields["priority"] is not None:
+        sets.append("priority=?"); vals.append(int(fields["priority"]))
     if fields.get("is_default"):
         row = db.q1("SELECT service_type FROM ai_service_configs WHERE id=?", (cid,))
         if row:
