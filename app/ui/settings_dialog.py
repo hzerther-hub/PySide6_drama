@@ -232,9 +232,6 @@ class SettingsDialog(QDialog):
             d = dlg.data()
             db.ex("UPDATE style_presets SET name=?, prompt=?, description=?, is_active=? WHERE id=?",
                   (d["name"], d["prompt"], d["description"], d["is_active"], row["id"]))
-            self.style_list.clear()
-            self.pages[2] = self._page_styles()
-            # 简化:重建当前页
             self._refresh_styles()
 
     def _refresh_styles(self):

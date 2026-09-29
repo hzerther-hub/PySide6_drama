@@ -101,7 +101,7 @@ class MergerToolPage(QWidget):
             return M.analyze(self.files)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("detect"), str(err)[:400])
+                err(tr("detect"))
                 return
             self.result = result
             self._render()
@@ -146,7 +146,7 @@ class MergerToolPage(QWidget):
             return M.analyze(files)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("align_outliers"), str(err)[:400])
+                err(tr("align_outliers"))
                 return
             self.result = result
             self.files = [f["path"] for f in result.files]
@@ -163,7 +163,7 @@ class MergerToolPage(QWidget):
             return f"{channel} → {path}"
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("merge_now"), str(err)[:500])
+                err(tr("merge_now"))
             else:
                 import os
                 self.verdict.setText("✅ " + tr("merge_done", str(result)))
@@ -177,7 +177,8 @@ def _uid() -> str:
 
 
 def W_h1() -> QLabel:
-    from . import widgets as W
+    from .toast import err, ok
+from . import widgets as W
     return W.h1("🎞 " + tr("merger_title"))
 
 

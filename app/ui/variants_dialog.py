@@ -16,6 +16,7 @@ from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
+from .toast import err, ok
 
 
 class VariantsDialog(QDialog):
@@ -124,7 +125,7 @@ class VariantsDialog(QDialog):
             return fp
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:300])
+                err("AI")
             self.reload()
         TASKMGR.submit("prompt", job, done, character_id=self.character["id"])
 
@@ -139,7 +140,7 @@ class VariantsDialog(QDialog):
             return str(out)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:300])
+                err("AI")
             self.reload()
         TASKMGR.submit("image", job, done, character_id=self.character["id"])
 

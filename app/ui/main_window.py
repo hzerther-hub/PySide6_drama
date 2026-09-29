@@ -92,6 +92,10 @@ class MainWindow(QMainWindow):
         # 状态栏
         self.status = self.statusBar()
 
+        # 全局 toast(D 类)
+        from .toast import ToastManager
+        ToastManager.attach(central)
+
         # 信号
         self.projects_page.set_new_callback(self._new_project)
         self.projects_page.open_drama.connect(self._open_drama)
@@ -164,30 +168,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.episode_page)
 
     def _promo_dialog(self, drama_id: int):
-        from ..pipeline import promo as promo_pipe
-        from PySide6.QtWidgets import QInputDialog
-        d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        meta = db.jload(d["metadata"], {})
-        platforms = [n for _v, n in promo_pipe.PLATFORMS]
-        platform, ok = QInputDialog.getItem(self, tr("promo_copy"), tr("target_platform"), platforms, 0, False)
-        if not ok:
-            return
-        formats = [n for _v, n in promo_pipe.FORMATS]
-        fmt, ok2 = QInputDialog.getItem(self, tr("promo_copy"), tr("output_format"), formats, 0, False)
-        if not ok2:
-            return
-        pv = dict(promo_pipe.PLATFORMS)[platform]
-        fv = dict(promo_pipe.FORMATS)[fmt]
-        def job(tid):
-            return promo_pipe.generate_promo(drama_id, pv, fv)
-        def done(tid, result, err):
-            if err:
-                QMessageBox.warning(self, tr("promo_copy"), str(err)[:400])
-            else:
-                QMessageBox.information(
-                    self, tr("promo_copy"),
-                    f"{result.get('title','')}\n\n{str(result.get('body',''))[:1200]}")
-        TASKMGR.submit("promo", job, done, drama_id=drama_id)
+        # 宣传文案已内置到项目页(A5),这里保留兼容入口
+        pass
 
     def _switch_language(self):
         from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QListWidgetItem
@@ -335,7 +317,7 @@ class ClonePage(QWidget):
             return video_clone.analyze_reference(self.drama_id)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self.reload()
         TASKMGR.submit("clone_analyze", job, done, drama_id=self.drama_id)
 
@@ -346,7 +328,7 @@ class ClonePage(QWidget):
             return video_clone.prepare_presenter(self.drama_id, d["style"])
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
         TASKMGR.submit("clone_presenter", job, done, drama_id=self.drama_id)
 
     def _shot_image(self, n: int):
@@ -356,7 +338,7 @@ class ClonePage(QWidget):
             return str(video_clone.generate_shot_image(self.drama_id, n, d["style"]))
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self.reload()
         TASKMGR.submit("clone_image", job, done, drama_id=self.drama_id)
 
@@ -366,7 +348,7 @@ class ClonePage(QWidget):
             return str(video_clone.generate_shot_video(self.drama_id, n, "720p"))
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self.reload()
         TASKMGR.submit("clone_video", job, done, drama_id=self.drama_id)
 
@@ -376,7 +358,7 @@ class ClonePage(QWidget):
             return str(video_clone.merge_clone(self.drama_id))
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("merge_now"), str(err)[:400])
+                err(tr("merge_now"))
             else:
                 import os
                 os.startfile(result)  # noqa

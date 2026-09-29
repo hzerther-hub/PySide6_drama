@@ -41,6 +41,7 @@ class TaskSignals(QObject):
     finished = Signal(int, str)       # task_id, status
     progress = Signal(int, int)       # task_id, percent
     message = Signal(str)
+    busy_changed = Signal(bool, str)  # 是否忙, 任务类型(D 类全局 running 态)
 
 
 class _FnTask(QRunnable):
@@ -62,6 +63,7 @@ class _FnTask(QRunnable):
                 self.done_cb(self.task_id, None, err)
         finally:
             self.signals.finished.emit(self.task_id, "done")
+            self.signals.busy_changed.emit(active_count() > 0, "")
 
 
 class TaskManager(QObject):
@@ -83,6 +85,7 @@ class TaskManager(QObject):
                done_cb: Callable | None = None, **links) -> int:
         tid = create_task(task_type, **links)
         self.pool.start(_FnTask(tid, fn, self.signals, done_cb))
+        self.signals.busy_changed.emit(True, task_type)
         self.updated.emit()
         return tid
 

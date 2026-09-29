@@ -18,6 +18,7 @@ from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
+from .toast import err, ok
 
 
 class CharacterFaceSwapDialog(QDialog):

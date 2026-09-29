@@ -29,9 +29,6 @@ def load_bundled_fonts(app) -> list[str]:
     return families
 
 
-def apply_theme(app, mode: str = "light") -> None:
-    app.setStyleSheet(DARK_QSS if mode == "dark" else LIGHT_QSS)
-
 LIGHT_QSS = """
 * { font-family: """ + FONT_STACK + """; font-size: 13px; }
 QMainWindow, QDialog { background: #f5f6f8; }

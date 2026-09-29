@@ -12,6 +12,7 @@ from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
+from .toast import err, ok
 
 
 class NovelPlanDialog(QDialog):
@@ -81,7 +82,7 @@ class NovelPlanDialog(QDialog):
             return novel_pipe.generate_cover(self.drama_id)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:300])
+                err("AI")
             else:
                 self.cover_lab.setPixmap(W.pixmap_from_media(result, 220, 116))
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)

@@ -17,6 +17,7 @@ from ..ai import face_swap
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
+from .toast import err, ok
 from . import widgets as W
 
 
@@ -164,7 +165,7 @@ class FaceSwapPage(QWidget):
             return outs
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("face_swap"), str(err)[:400])
+                err(tr("face_swap"))
             for card, out in (result or []):
                 card.set_result(out)
         TASKMGR.submit("face_swap", job, done)

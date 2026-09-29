@@ -27,6 +27,7 @@ from ..pipeline import rewriter
 from ..pipeline import storyboard as sb_pipe
 from ..pipeline import stitch as stitch_pipe
 from . import widgets as W
+from .toast import err, ok
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -105,6 +106,9 @@ class EpisodePage(QWidget):
             self.res_combo.addItem(r)
         self.res_combo.setCurrentIndex(1)
         top.addWidget(self.res_combo)
+        self.status_lab = QLabel("")
+        self.status_lab.setObjectName("muted")
+        top.addWidget(self.status_lab)
         self.task_btn = QPushButton(tr("tasks"))
         self.task_btn.clicked.connect(self._open_tasks)
         top.addWidget(self.task_btn)
@@ -224,6 +228,12 @@ class EpisodePage(QWidget):
             self.res_combo.setCurrentText(cur)
         self.res_combo.blockSignals(False)
 
+
+    def _set_busy(self, on: bool, label: str = ""):
+        """D 类:全局忙碌态(按钮禁用 + 状态栏提示),避免重复点击。"""
+        self._busy = on
+        self.status_lab.setText(("⏳ " + label) if on else "")
+
     def _goto_step(self, key: str):
         self._step = key
         self.nav.set_active(key)
@@ -327,7 +337,7 @@ class EpisodePage(QWidget):
             return novel_pipe.write_chapter_with_review(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 self._reload_raw()
                 r = (result or {})
@@ -356,7 +366,7 @@ class EpisodePage(QWidget):
             return outs
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 fixed = sum(1 for r in (result or []) if r and r.get("fixed"))
                 QMessageBox.information(self, tr("batch_write"),
@@ -376,7 +386,7 @@ class EpisodePage(QWidget):
             return novel_pipe.review_chapter(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 ReviewDialog(self, result or {}, self._ep["episode_number"]).exec()
         TASKMGR.submit("review", job, done, episode_id=self.episode_id)
@@ -392,7 +402,7 @@ class EpisodePage(QWidget):
             return novel_pipe.edit_chapter(self.episode_id, instr, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 self._reload_raw()
                 self.edit_instr.clear()
@@ -429,7 +439,7 @@ class EpisodePage(QWidget):
                                            config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
                 self.script_edit.setPlainText(result or "")
@@ -511,7 +521,7 @@ class EpisodePage(QWidget):
                                                 config_id=self.image_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_comic_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
@@ -555,7 +565,7 @@ class EpisodePage(QWidget):
             return extract_pipe.extract_assets(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 self._reload_assets()
         TASKMGR.submit("extract", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
@@ -648,7 +658,7 @@ class EpisodePage(QWidget):
             return fn(row_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_assets()
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id, character_id=row_id if kind == "character" else None)
 
@@ -668,7 +678,7 @@ class EpisodePage(QWidget):
             return url
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
@@ -798,7 +808,7 @@ class EpisodePage(QWidget):
                                                    config_id=self.image_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "🖼", str(err)[:400])
+                err("🖼")
             self._reload_storyboard()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -812,7 +822,7 @@ class EpisodePage(QWidget):
         def done(tid, result, err):
             if err:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
-                QMessageBox.warning(self, "🎬", str(err)[:400])
+                err("🎬")
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -822,7 +832,7 @@ class EpisodePage(QWidget):
             return shot_tools.burn_subtitle(sb_id)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "T", str(err)[:400])
+                err("T")
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -832,7 +842,7 @@ class EpisodePage(QWidget):
                                              config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_storyboard()
         TASKMGR.submit("storyboard", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
@@ -841,7 +851,7 @@ class EpisodePage(QWidget):
             return sb_pipe.gen_video_prompts(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             else:
                 QMessageBox.information(self, tr("batch_prompts"), f"OK: {result}")
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
@@ -888,7 +898,7 @@ class EpisodePage(QWidget):
         def done(tid, result, err):
             if err:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
-                QMessageBox.warning(self, tr("batch_video"), str(err)[:400])
+                err(tr("batch_video"))
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -904,7 +914,7 @@ class EpisodePage(QWidget):
             return str(p)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "🔊", str(err)[:400])
+                err("🔊")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _play_video(self, url: str | None):
@@ -981,7 +991,7 @@ class EpisodePage(QWidget):
             return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_comic()
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
 
@@ -994,7 +1004,7 @@ class EpisodePage(QWidget):
             return str(out)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, "AI", str(err)[:400])
+                err("AI")
             self._reload_comic()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 
@@ -1008,7 +1018,7 @@ class EpisodePage(QWidget):
             return stitch_pipe.stitch_panels(self.episode_id)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("stitch_long"), str(err)[:400])
+                err(tr("stitch_long"))
             else:
                 import os
                 os.startfile(result)  # noqa
@@ -1097,7 +1107,7 @@ class EpisodePage(QWidget):
             return merge_pipe.merge_episode(self.episode_id, ids)
         def done(tid, result, err):
             if err:
-                QMessageBox.warning(self, tr("export_stage"), str(err)[:400])
+                err(tr("export_stage"))
             else:
                 import os
                 os.startfile(str(result))  # noqa
