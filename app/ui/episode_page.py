@@ -10,6 +10,7 @@ import json
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+                               QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QSplitter,
                                QTabWidget, QVBoxLayout, QWidget)
@@ -263,22 +264,34 @@ class EpisodePage(QWidget):
             self._loading = False
 
     # ── 阶段① 原始内容 ──
+    # 主编辑区需要撑满剩余高度(自身内部滚动),其余阶段由外层滚动区承载
+    FILL_PANELS = ("raw", "rewrite")
+
     def _build_panel(self, key: str) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
         getattr(self, f"_panel_{key}")(lay)
-        lay.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        scroll.setWidget(w)
-        return scroll
+        if key not in self.FILL_PANELS:
+            lay.addStretch(1)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+            scroll.setWidget(w)
+            return scroll
+        # 撑满型:直接返回,文本框自身内部滚动
+        return w
 
     def _panel_raw(self, lay):
         self.raw_edit = QPlainTextEdit()
         self.raw_edit.setPlaceholderText(tr("paste_hint"))
-        self.raw_edit.setMinimumHeight(360)
+        self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        from .ai_edit_dialog import install_ai_edit_shortcut
+        install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit)
+        ai_btn = QPushButton("✨ AI 修改 (Ctrl+L)")
+        ai_btn.setToolTip("选中若干行改写选中内容;不选则在光标位置插入")
+        ai_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
+        self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         bar = QHBoxLayout()
         self.words_spin = QSpinBox()
         self.words_spin.setRange(0, 200000)
@@ -295,6 +308,7 @@ class EpisodePage(QWidget):
         bar.addWidget(self.words_spin)
         bar.addWidget(QLabel(tr("style_label")))
         bar.addWidget(self.style_edit, 1)
+        bar.addWidget(ai_btn)
         bar.addWidget(novel_btn)
         bar.addWidget(batch_btn)
         bar.addWidget(save_btn)
@@ -314,13 +328,34 @@ class EpisodePage(QWidget):
         bar2.addWidget(self.edit_instr, 1)
         bar2.addWidget(edit_btn)
         lay.addLayout(bar2)
-        lay.addWidget(self.raw_edit)
+        lay.addWidget(self.raw_edit, 1)
 
     def _reload_raw(self):
         ep = self._ep
         self.raw_edit.setPlainText(ep["content"] or "")
         self.words_spin.setValue(ep["target_words"] or 0)
         self.style_edit.setText(db.get_setting("novel_style", "爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置"))
+
+
+    def _open_ai_edit(self, editor):
+        """Ctrl+L:选中→改写选中;未选中→光标处插入;可勾选整章处理。"""
+        from .ai_edit_dialog import AiEditDialog
+        text = editor.toPlainText()
+        if not text.strip():
+            return
+        sel = editor.textCursor()
+        start, end = sel.selectionStart(), sel.selectionEnd()
+        mode = "selection" if end > start else "insert"
+        col = "content" if editor is self.raw_edit else "script_content"
+        def apply(new_text: str, s: int, e: int):
+            editor.setPlainText(new_text)
+            if col == "content":
+                db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?",
+                      (new_text, db.now(), self.episode_id))
+                self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            else:
+                self._save_script()
+        AiEditDialog(self, editor, mode, start, end, apply, episode_id=self.episode_id).exec()
 
     def _save_raw(self):
         db.ex("UPDATE episodes SET content=?, target_words=?, updated_at=? WHERE id=?",
@@ -417,17 +452,23 @@ class EpisodePage(QWidget):
     # ── 阶段② AI 改写 ──
     def _panel_rewrite(self, lay):
         self.script_edit = QPlainTextEdit()
-        self.script_edit.setMinimumHeight(360)
+        self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        from .ai_edit_dialog import install_ai_edit_shortcut
+        install_ai_edit_shortcut(self.script_edit, self._open_ai_edit)
+        ai_btn2 = QPushButton("✨ AI 修改 (Ctrl+L)")
+        ai_btn2.setToolTip("选中若干行改写选中内容;不选则在光标位置插入")
+        ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
         bar = QHBoxLayout()
         rewrite_btn = W.primary_btn(tr("rewrite"))
         rewrite_btn.clicked.connect(self._rewrite)
+        bar.addWidget(ai_btn2)
         save_btn = QPushButton(tr("save"))
         save_btn.clicked.connect(self._save_script)
         bar.addWidget(rewrite_btn)
         bar.addWidget(save_btn)
         bar.addStretch(1)
         lay.addLayout(bar)
-        lay.addWidget(self.script_edit)
+        lay.addWidget(self.script_edit, 1)
 
     def _reload_rewrite(self):
         self.script_edit.setPlainText(self._ep["script_content"] or "")
