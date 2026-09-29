@@ -25,11 +25,12 @@ def _apply_drama_font(app) -> None:
         app.setFont(QFont(families[0], 10))
         return
     if sys.platform == "darwin":
-        app.setFont(QFont("PingFang SC", 10))
+        f = QFont("PingFang SC", 10)
     else:
         f = QFont("Microsoft YaHei UI", 10)
         f.setStyleHint(QFont.SansSerif)
-        app.setFont(f)
+    f.setPointSize(10)
+    app.setFont(f)
 
 
 def main() -> int:

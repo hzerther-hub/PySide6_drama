@@ -24,7 +24,8 @@ def load_bundled_fonts(app) -> list[str]:
         for f in sorted(fonts_dir.glob("*")):
             if f.suffix.lower() in (".ttf", ".otf", ".ttc"):
                 fid = QFontDatabase.addApplicationFont(str(f))
-                families += QFontDatabase.applicationFontFamilies(fid)
+                fams = QFontDatabase.applicationFontFamilies(fid)
+                families += fams
     return families
 
 
