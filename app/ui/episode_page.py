@@ -315,9 +315,9 @@ class EpisodePage(QWidget):
         lay.addLayout(bar)
         # 小说线第二行:策划 / 审校 / 按指令改稿 / 封面
         bar2 = QHBoxLayout()
-        plan_btn = QPushButton("📖 策划与设定")
+        plan_btn = QPushButton("§ 策划与设定")
         plan_btn.clicked.connect(self._open_plan)
-        review_btn = QPushButton("🔎 AI 六维审校")
+        review_btn = QPushButton("◇ AI 六维审校")
         review_btn.clicked.connect(self._review_chapter)
         self.edit_instr = QLineEdit()
         self.edit_instr.setPlaceholderText("按指令改稿:如「把开头改得更抓人」「加强母亲戏份」")
@@ -539,7 +539,7 @@ class EpisodePage(QWidget):
         c_bar = QHBoxLayout()
         c_bar.addWidget(W.muted("漫画风格镜像资产(与常规资产行独立,用于条漫出图)"))
         c_bar.addStretch(1)
-        c_batch = W.primary_btn("🎨 " + tr("batch_image"))
+        c_batch = W.primary_btn("◑ " + tr("batch_image"))
         c_batch.clicked.connect(self._batch_comic_assets)
         c_bar.addWidget(c_batch)
         c_lay.addLayout(c_bar)
@@ -676,7 +676,7 @@ class EpisodePage(QWidget):
             swap = QPushButton(tr("face_swap"))
             swap.clicked.connect(lambda _=False, r=row: self._face_swap(r["id"]))
             btns.addWidget(swap)
-            var = QPushButton("🎨 变体")
+            var = QPushButton("◑ 变体")
             var.setToolTip("造型变体(多套服装造型)")
             var.clicked.connect(lambda _=False, r=row: self._open_variants(r["id"]))
             btns.addWidget(var)
@@ -806,16 +806,16 @@ class EpisodePage(QWidget):
         if r["first_frame_image"]:
             head.addWidget(W.tag("首帧✓"))
         head.addStretch(1)
-        ff_btn = QPushButton("🖼 首帧")
+        ff_btn = QPushButton("▣ 首帧")
         ff_btn.setToolTip("生成本镜头首帧图")
         ff_btn.clicked.connect(lambda _=False, i=r["id"]: self._gen_first_frame(i))
-        i2v_btn = QPushButton("🎬 图生")
+        i2v_btn = QPushButton("▷ 图生")
         i2v_btn.setToolTip("用首帧图生成视频(图生视频,注入 @角色 参考图)")
         i2v_btn.clicked.connect(lambda _=False, i=r["id"]: self._compose_i2v(i))
         sub_btn = QPushButton("T 字幕")
         sub_btn.setToolTip("把旁白/台词烧录为字幕版本")
         sub_btn.clicked.connect(lambda _=False, i=r["id"]: self._burn_sub(i))
-        tts_btn = QPushButton("🔊")
+        tts_btn = QPushButton("♪")
         tts_btn.setToolTip(tr("narration"))
         tts_btn.clicked.connect(lambda _=False, i=r["id"]: self._one_tts(i))
         redo = QPushButton(tr("redraw"))
@@ -849,7 +849,7 @@ class EpisodePage(QWidget):
                                                    config_id=self.image_model.currentData())
         def done(tid, result, err):
             if err:
-                err("🖼")
+                err("▣")
             self._reload_storyboard()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -863,7 +863,7 @@ class EpisodePage(QWidget):
         def done(tid, result, err):
             if err:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
-                err("🎬")
+                err("▷")
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -955,7 +955,7 @@ class EpisodePage(QWidget):
             return str(p)
         def done(tid, result, err):
             if err:
-                err("🔊")
+                err("♪")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _play_video(self, url: str | None):

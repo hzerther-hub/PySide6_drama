@@ -15,9 +15,9 @@ from ..core.i18n import tr
 from . import widgets as W
 from .toast import err, ok
 
-WT_LABEL = {"novel": "📖 " + tr("wt_novel"), "drama": "🎬 " + tr("wt_drama"),
-            "comic": "📚 " + tr("wt_comic"), "promotion": "📣 " + tr("wt_promotion"),
-            "video_clone": "🎞 " + tr("wt_clone")}
+WT_LABEL = {"novel": "§ " + tr("wt_novel"), "drama": "▷ " + tr("wt_drama"),
+            "comic": "▤ " + tr("wt_comic"), "promotion": "◈ " + tr("wt_promotion"),
+            "video_clone": "▷ " + tr("wt_clone")}
 
 STATUS_META = {
     "pending": ("待开始", "#86909c"),

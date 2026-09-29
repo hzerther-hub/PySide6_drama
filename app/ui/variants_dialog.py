@@ -23,10 +23,10 @@ class VariantsDialog(QDialog):
     def __init__(self, parent, character: dict):
         super().__init__(parent)
         self.character = character
-        self.setWindowTitle(f"🎨 造型变体 · {character['name']}")
+        self.setWindowTitle(f"◑ 造型变体 · {character['name']}")
         self.resize(680, 560)
         root = QVBoxLayout(self)
-        root.addWidget(W.h2(f"🎨 {character['name']} · 造型变体"))
+        root.addWidget(W.h2(f"◑ {character['name']} · 造型变体"))
         root.addWidget(W.muted("为角色添加多套造型(如 便装/战斗/回忆青年);生成形象后可「用作角色形象」。"))
 
         add_box = W.make_card()

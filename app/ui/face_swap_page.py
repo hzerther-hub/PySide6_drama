@@ -80,7 +80,7 @@ class FaceSwapPage(QWidget):
         root.addWidget(W.muted("通用图片换脸工具:源脸照片 → 替换目标图中的人脸(本地 127.0.0.1:5678 或远程,在右侧下拉选择)。角色形象换脸请到「项目 → 进入制作 → 视漫制作」的角色卡片。"))
 
         bar = QHBoxLayout()
-        add_btn = QPushButton("🖼 " + tr("import_files") + "(目标图)")
+        add_btn = QPushButton("▣ " + tr("import_files") + "(目标图)")
         add_btn.setObjectName("primary")
         add_btn.clicked.connect(self._add_targets)
         self.source_btn = QPushButton("👤 选择源脸照片")

@@ -195,9 +195,9 @@ class AssetDetailDialog(QDialog):
         fp_btns = QHBoxLayout()
         gen_fp = QPushButton("✨ AI 生成")
         gen_fp.clicked.connect(self._gen_prompt)
-        regen_fp = QPushButton("🔄 重新生成")
+        regen_fp = QPushButton("↻ 重新生成")
         regen_fp.clicked.connect(self._gen_prompt)
-        copy_fp = QPushButton("📋 复制")
+        copy_fp = QPushButton("▤ 复制")
         copy_fp.clicked.connect(self._copy_prompt)
         for b in (gen_fp, regen_fp, copy_fp):
             fp_btns.addWidget(b)
@@ -207,7 +207,7 @@ class AssetDetailDialog(QDialog):
 
         # 角色变体
         if kind == "character":
-            var_btn = QPushButton("🎨 造型变体")
+            var_btn = QPushButton("◑ 造型变体")
             var_btn.clicked.connect(self._open_variants)
             root.addWidget(var_btn)
 
@@ -219,7 +219,7 @@ class AssetDetailDialog(QDialog):
         footer.addStretch(1)
         upload = QPushButton(tr("upload"))
         upload.clicked.connect(self._upload)
-        gen_img = W.primary_btn("🎨 生成形象")
+        gen_img = W.primary_btn("◑ 生成形象")
         gen_img.clicked.connect(self._gen_image)
         save = W.primary_btn(tr("save"))
         save.clicked.connect(self._save)

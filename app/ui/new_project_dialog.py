@@ -12,11 +12,11 @@ from ..core.i18n import tr
 from . import widgets as W
 
 WORK_TYPES = [
-    ("novel", "📖", "wt_novel", "wt_novel_desc"),
-    ("drama", "🎬", "wt_drama", "wt_drama_desc"),
-    ("comic", "📚", "wt_comic", "wt_comic_desc"),
-    ("promotion", "📣", "wt_promotion", "wt_promotion_desc"),
-    ("video_clone", "🎞", "wt_clone", "wt_clone_desc"),
+    ("novel", "§", "wt_novel", "wt_novel_desc"),
+    ("drama", "▷", "wt_drama", "wt_drama_desc"),
+    ("comic", "▤", "wt_comic", "wt_comic_desc"),
+    ("promotion", "◈", "wt_promotion", "wt_promotion_desc"),
+    ("video_clone", "▷", "wt_clone", "wt_clone_desc"),
 ]
 ASPECTS = [("16:9", "16:9 · 横屏"), ("9:16", "9:16 · 竖屏"), ("1:1", "1:1 · 方形"), ("adaptive", "自适应")]
 ETHNICITIES = [("auto", "ethnicity_auto"), ("east_asian", "东亚"), ("middle_eastern", "中东"),
@@ -145,7 +145,7 @@ class NewProjectDialog(QDialog):
             lay = QFormLayout()
             self.ref_btn = QPushButton("📹 选择参考视频…")
             self.ref_btn.clicked.connect(self._pick_video)
-            self.product_btn = QPushButton("🖼 选择产品照片…")
+            self.product_btn = QPushButton("▣ 选择产品照片…")
             self.product_btn.clicked.connect(self._pick_product)
             self.presenter_btn = QPushButton("👤 选择出镜照片(可选)…")
             self.presenter_btn.clicked.connect(self._pick_presenter)
@@ -168,7 +168,7 @@ class NewProjectDialog(QDialog):
         p, _ = QFileDialog.getOpenFileName(self, "选择产品照片", "", "Images (*.png *.jpg *.jpeg *.webp)")
         if p:
             self._product_img = p
-            self.product_btn.setText("🖼 " + p.split("/")[-1].split("\\")[-1])
+            self.product_btn.setText("▣ " + p.split("/")[-1].split("\\")[-1])
 
     def _pick_presenter(self):
         p, _ = QFileDialog.getOpenFileName(self, "选择出镜照片", "", "Images (*.png *.jpg *.jpeg *.webp)")

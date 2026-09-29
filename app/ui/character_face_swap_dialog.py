@@ -57,7 +57,7 @@ class CharacterFaceSwapDialog(QDialog):
         self.src_img.setStyleSheet("border:1px dashed rgba(128,128,128,80);border-radius:8px;color:#888;")
         src_box.addWidget(self.src_img)
         btns = QHBoxLayout()
-        up = QPushButton("🖼 " + tr("upload"))
+        up = QPushButton("▣ " + tr("upload"))
         up.clicked.connect(self._pick_source)
         other = QComboBox()
         other.addItem("从其他角色形象选…", None)

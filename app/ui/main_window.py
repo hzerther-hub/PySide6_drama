@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
         tlay.addWidget(logo)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        self._nav_defs = [("projects", "📁", "nav_projects")]
+        self._nav_defs = [("projects", "▦", "nav_projects")]
         for key, icon, label_key in self._nav_defs:
             b = QPushButton(f"{icon} {tr(label_key)}")
             b.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
@@ -65,13 +65,13 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, k=key: self._goto(k))
             self.nav_btns[key] = b
             tlay.addWidget(b)
-        theme_btn = QPushButton("🌓 " + tr("theme"))
+        theme_btn = QPushButton("◐ " + tr("theme"))
         theme_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         theme_btn.clicked.connect(self._toggle_theme)
         settings_btn = QPushButton("⚙️ " + tr("nav_settings"))
         settings_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         settings_btn.clicked.connect(self._open_settings)
-        lang_btn = QPushButton("🌐 " + tr("lang_short"))
+        lang_btn = QPushButton("◎ " + tr("lang_short"))
         lang_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         lang_btn.clicked.connect(self._switch_language)
         tlay.addWidget(theme_btn)
@@ -270,7 +270,7 @@ class ClonePage(QWidget):
     def load(self, drama_id: int):
         self.drama_id = drama_id
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.title.setText(f"🎞 {d['title']}")
+        self.title.setText(f"▷ {d['title']}")
         self.reload()
 
     def reload(self):
@@ -304,7 +304,7 @@ class ClonePage(QWidget):
             btns = QVBoxLayout()
             img_btn = QPushButton("3️⃣ " + tr("redraw") + " · 首帧图")
             img_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_image(n))
-            vid_btn = W.primary_btn("🎬 " + tr("batch_video"))
+            vid_btn = W.primary_btn("▷ " + tr("batch_video"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
             btns.addWidget(img_btn)
             btns.addWidget(vid_btn)

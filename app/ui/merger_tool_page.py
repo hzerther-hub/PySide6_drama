@@ -34,11 +34,11 @@ class MergerToolPage(QWidget):
         root.addWidget(W_muted())
 
         bar = QHBoxLayout()
-        import_files = QPushButton("📁 " + tr("import_files"))
+        import_files = QPushButton("▦ " + tr("import_files"))
         import_files.clicked.connect(self._import_files)
         import_folder = QPushButton("📂 " + tr("import_folder"))
         import_folder.clicked.connect(self._import_folder)
-        detect_btn = QPushButton("🔎 " + tr("detect"))
+        detect_btn = QPushButton("◇ " + tr("detect"))
         detect_btn.clicked.connect(self._detect)
         align_btn = QPushButton(tr("align_outliers"))
         align_btn.setObjectName("primary")
@@ -179,7 +179,7 @@ def _uid() -> str:
 def W_h1() -> QLabel:
     from .toast import err, ok
 from . import widgets as W
-    return W.h1("🎞 " + tr("merger_title"))
+    return W.h1("▷ " + tr("merger_title"))
 
 
 def W_muted() -> QLabel:

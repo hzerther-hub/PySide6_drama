@@ -22,13 +22,13 @@ class NovelPlanDialog(QDialog):
         super().__init__(parent)
         self.drama_id = drama_id
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.setWindowTitle("📖 小说策划与设定")
+        self.setWindowTitle("§ 小说策划与设定")
         self.resize(760, 620)
         root = QVBoxLayout(self)
         head = QHBoxLayout()
-        head.addWidget(W.h2(f"📖 {d['title']}"))
+        head.addWidget(W.h2(f"§ {d['title']}"))
         head.addStretch(1)
-        cover_btn = QPushButton("🎨 AI 生成封面")
+        cover_btn = QPushButton("◑ AI 生成封面")
         cover_btn.clicked.connect(self._gen_cover)
         head.addWidget(cover_btn)
         root.addLayout(head)
@@ -100,12 +100,12 @@ class ReviewDialog(QDialog):
 
     def __init__(self, parent, review: dict, episode_number: int = 0):
         super().__init__(parent)
-        self.setWindowTitle("🔎 六维审校结果")
+        self.setWindowTitle("◇ 六维审校结果")
         self.resize(640, 520)
         root = QVBoxLayout(self)
         overall = review.get("overall", "")
         head = QHBoxLayout()
-        head.addWidget(W.h2(f"🔎 第 {episode_number} 章审校 · " + ("✅ 通过" if overall == "pass" else "⚠️ 需修复")))
+        head.addWidget(W.h2(f"◇ 第 {episode_number} 章审校 · " + ("✅ 通过" if overall == "pass" else "⚠️ 需修复")))
         head.addStretch(1)
         root.addLayout(head)
         if review.get("summary"):

@@ -42,7 +42,7 @@ class SettingsDialog(QDialog):
         root = QHBoxLayout(self)
         self.tabs_nav = QListWidget()
         self.tabs_nav.setFixedWidth(150)
-        for key, icon in [("ai_services", "🔌"), ("general", "⚙️"), ("style_presets", "🎨"),
+        for key, icon in [("ai_services", "🔌"), ("general", "⚙️"), ("style_presets", "◑"),
                           ("agent_config", "🤖"), ("storage", "💾"), ("about_update", "ℹ️")]:
             item = QListWidgetItem(f"{icon}  {tr(key)}")
             self.tabs_nav.addItem(item)
