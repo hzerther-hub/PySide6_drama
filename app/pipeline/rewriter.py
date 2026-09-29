@@ -1,0 +1,24 @@
+# -*- coding: utf-8 -*-
+"""阶段②:小说原文 → 格式化剧本(script_rewriter Agent)。"""
+from __future__ import annotations
+
+from ..agents import runner
+from ..core import db
+
+
+def rewrite_script(episode_id: int, style_hint: str = "", config_id: int | None = None) -> str:
+    """AI 改写当前集原文为格式化剧本,写回 episodes.script_content。"""
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集不存在")
+    raw = ep["content"] or ""
+    if not raw.strip():
+        raise RuntimeError("请先在「原始内容」粘贴或生成小说文本")
+    prompt = f"""请把以下原始内容改写为短剧格式化剧本(第 {ep['episode_number']} 集)。
+{('文风要求:' + style_hint) if style_hint else ''}
+
+原始内容:
+{raw}"""
+    result = runner.run_agent("script_rewriter", prompt, config_id=config_id)
+    db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?", (result, db.now(), episode_id))
+    return result
