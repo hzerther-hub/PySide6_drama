@@ -24,7 +24,7 @@ LANG_OUTPUT_NAME = {
 _current = "zh"
 
 Z = {  # 中文(基准)
- "app_title": "易好短剧", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具",
+ "app_title": "易好短剧", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具", "nav_faceswap": "换脸",
  "projects": "项目启动台", "tagline": "从一个创意到一部短剧,AI 全流程为你代工",
  "stat_projects": "{} 个项目", "stat_running": "{} 进行中", "stat_styles": "{} 种视觉风格",
  "filter_all": "全部", "filter_pending": "待开始", "filter_running": "进行中", "filter_done": "已完成",
@@ -59,7 +59,7 @@ Z = {  # 中文(基准)
  "download": "下载", "refresh": "刷新", "refresh_data": "刷新数据", "tasks": "任务", "task_empty": "暂无任务",
  "settings": "设置", "ai_services": "AI 服务", "general": "通用", "style_presets": "风格预设", "agent_config": "Agent 配置",
  "storage": "存储位置", "about_update": "关于更新", "text_svc": "文本", "image_svc": "图片", "video_svc": "视频",
- "tts_svc": "配音", "test": "测试", "enabled": "已启用", "stopped": "已停用", "configured": "已配置",
+ "tts_svc": "配音", "faceswap_svc": "换脸", "test": "测试", "enabled": "已启用", "stopped": "已停用", "configured": "已配置",
  "quick_config": "易好快捷配置", "quick_hint": "输入 Yihao API Key,一次写入文本、图片、视频三条推荐配置。",
  "write_config": "写入易好配置", "provider": "厂商", "base_url": "Base URL", "model": "模型", "api_key": "API Key",
  "manual_tpl": "手动模板", "svc_text_desc": "剧本改写、角色场景提取、分镜拆解等 Agent 文本能力",
@@ -87,7 +87,7 @@ def _t(src: dict, **over) -> dict:
 T: dict[str, dict] = {"zh": Z}
 
 T["en"] = _t(Z,
- app_title="Yihao Shorts", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger",
+ app_title="Yihao Shorts", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger", nav_faceswap="Face Swap",
  projects="Project Launchpad", tagline="From an idea to a short drama — AI handles the whole pipeline",
  stat_projects="{} projects", stat_running="{} in progress", stat_styles="{} visual styles",
  filter_all="All", filter_pending="To start", filter_running="In progress", filter_done="Completed",
@@ -119,7 +119,8 @@ T["en"] = _t(Z,
  merge_selected="Merge selected ({})", clear_selection="Clear", mark_done="Mark completed", download="Download", refresh="Refresh",
  refresh_data="Refresh data", tasks="Tasks", task_empty="No tasks", settings="Settings", ai_services="AI services",
  general="General", style_presets="Style presets", agent_config="Agent config", storage="Storage", about_update="About & update",
- text_svc="Text", image_svc="Image", video_svc="Video", tts_svc="TTS", test="Test", enabled="Enabled", stopped="Disabled",
+ text_svc="Text", image_svc="Image", video_svc="Video", tts_svc="TTS", faceswap_svc="Face swap",
+ test="Test", enabled="Enabled", stopped="Disabled",
  configured="Configured", quick_config="Yihao quick setup", quick_hint="Paste a Yihao API Key to write recommended text/image/video configs at once.",
  write_config="Apply", provider="Provider", base_url="Base URL", model="Model", api_key="API Key", manual_tpl="Manual template",
  svc_text_desc="Agents for script rewriting, asset extraction, storyboard", svc_image_desc="Character/scene/shot image generation",

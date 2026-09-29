@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..agents import prompts
+from ..ai import face_swap as fs_mod
 from ..ai import registry
 from ..ai.registry import SVC_CN
 from ..ai.image_client import test_config as img_test
@@ -22,8 +23,13 @@ from ..core import config, db
 from ..core.i18n import LANGS, tr
 from . import widgets as W
 
-TESTERS = {"text": text_test, "image": img_test, "video": video_test, "tts": tts_test}
-SVC_LABEL = {"text": "text_svc", "image": "image_svc", "video": "video_svc", "tts": "tts_svc"}
+TESTERS = {"text": text_test, "image": img_test, "video": video_test,
+           "tts": tts_test, "faceswap": fs_mod.test_config}
+SVC_LABEL = {"text": "text_svc", "image": "image_svc", "video": "video_svc",
+             "tts": "tts_svc", "faceswap": "faceswap_svc"}
+SVC_DESC = {"text": "svc_text_desc", "image": "svc_image_desc",
+            "video": "svc_video_desc", "tts": "svc_tts_desc",
+            "faceswap": "本地或远程 InsightFace 换脸服务(角色形象换脸/换脸工具页)"}
 
 
 class SettingsDialog(QDialog):
@@ -91,8 +97,7 @@ class SettingsDialog(QDialog):
         for st in registry.SERVICE_TYPES:
             tab = QWidget()
             t_lay = QVBoxLayout(tab)
-            desc = {"text": "svc_text_desc", "image": "svc_image_desc",
-                    "video": "svc_video_desc", "tts": "svc_tts_desc"}[st]
+            desc = SVC_DESC[st]
             bar = QHBoxLayout()
             bar.addWidget(W.muted(tr(desc)))
             bar.addStretch(1)

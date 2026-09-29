@@ -64,6 +64,11 @@ class FaceSwapPage(QWidget):
         head = QHBoxLayout()
         head.addWidget(W.h1("🎭 " + tr("face_swap")))
         head.addStretch(1)
+        head.addWidget(QLabel(tr("faceswap_svc") + ":"))
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumWidth(200)
+        self.model_combo.currentIndexChanged.connect(lambda _i: self._check_health())
+        head.addWidget(self.model_combo)
         self.health_lab = QLabel("…")
         self.health_lab.setObjectName("muted")
         head.addWidget(self.health_lab)
@@ -71,7 +76,7 @@ class FaceSwapPage(QWidget):
         recheck.clicked.connect(self._check_health)
         head.addWidget(recheck)
         root.addLayout(head)
-        root.addWidget(W.muted("本地 InsightFace 换脸:源脸照片 → 替换目标图中的人脸。需先启动换脸服务(127.0.0.1:5678,见原版 face-swap-service)。"))
+        root.addWidget(W.muted("本地 InsightFace 换脸:源脸照片 → 替换目标图中的人脸。可配置本地(127.0.0.1:5678)或远程服务:设置 → AI 服务 → 换脸。"))
 
         bar = QHBoxLayout()
         add_btn = QPushButton("🖼 " + tr("import_files") + "(目标图)")
@@ -112,15 +117,25 @@ class FaceSwapPage(QWidget):
         self.grid_lay.addStretch(1)
         self.scroll.setWidget(self.holder)
         root.addWidget(self.scroll, 1)
-        self._check_health()
+        self.reload_models()
 
     def _check_health(self):
-        ok, msg = face_swap.health()
+        cfg_id = self.model_combo.currentData()
+        ok, msg = face_swap.health(config_id=cfg_id)
         self.health_lab.setText(("✅ " if ok else "❌ ") + msg)
         # 角色下拉
         self.char_combo.clear()
         for r in db.q("SELECT id,name FROM characters ORDER BY drama_id, id"):
             self.char_combo.addItem(r["name"], r["id"])
+
+    def reload_models(self):
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        rows = db.q("SELECT * FROM ai_service_configs WHERE service_type='faceswap' AND is_active=1 ORDER BY priority DESC, id")
+        for r in rows:
+            self.model_combo.addItem(f"{r['remark'] or r['provider']} · {r['base_url']}", r["id"])
+        self.model_combo.blockSignals(False)
+        self._check_health()
 
     def _add_targets(self):
         ps, _ = QFileDialog.getOpenFileNames(self, tr("import_files"), "", "Images (*.png *.jpg *.jpeg *.webp)")
@@ -146,7 +161,8 @@ class FaceSwapPage(QWidget):
         if not self.source_path:
             QMessageBox.information(self, tr("face_swap"), "请选择源脸照片")
             return
-        ok, msg = face_swap.health()
+        cfg_id = self.model_combo.currentData()
+        ok, msg = face_swap.health(config_id=cfg_id)
         if not ok:
             QMessageBox.warning(self, tr("face_swap"), msg)
             return
@@ -157,8 +173,8 @@ class FaceSwapPage(QWidget):
         def job(tid):
             outs = []
             for c in cards:
-                out = face_swap.swap_one(c.path, self.source_path,
-                                         swap_all_faces=all_faces, face_enhance=enhance)
+                out = face_swap.swap_one(c.path, self.source_path, swap_all_faces=all_faces,
+                                         face_enhance=enhance, config_id=cfg_id)
                 outs.append((c, str(out)))
             return outs
         def done(tid, result, err):

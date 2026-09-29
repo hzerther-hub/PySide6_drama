@@ -39,8 +39,9 @@ def main() -> int:
 
     db.init_db()
     seed_prompt_files()
-    from .ai.registry import seed_tts_default
+    from .ai.registry import seed_tts_default, seed_faceswap_default
     seed_tts_default()
+    seed_faceswap_default()
 
     lang = db.get_setting("ui_language", "zh")
     set_language(lang)

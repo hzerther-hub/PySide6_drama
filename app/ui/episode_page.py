@@ -96,6 +96,9 @@ class EpisodePage(QWidget):
         top.addWidget(QLabel(tr("video_svc") + ":"))
         self.video_model = QComboBox()
         top.addWidget(self.video_model)
+        top.addWidget(QLabel(tr("faceswap_svc") + ":"))
+        self.face_model = QComboBox()
+        top.addWidget(self.face_model)
         top.addWidget(QLabel(tr("resolution") + ":"))
         self.res_combo = QComboBox()
         for r in ("480p", "720p", "1080p"):
@@ -154,11 +157,12 @@ class EpisodePage(QWidget):
         self._goto_step("raw")
 
     def _reload_models(self):
-        for combo, stype in ((self.text_model, "text"), (self.image_model, "image"), (self.video_model, "video")):
+        for combo, stype in ((self.text_model, "text"), (self.image_model, "image"),
+                             (self.video_model, "video"), (self.face_model, "faceswap")):
             combo.clear()
             combo.addItem(tr("configured"), None)
             for r in registry.list_configs(stype):
-                combo.addItem(f"{r['provider']}/{r['model']}", r["id"])
+                combo.addItem(f"{r['remark'] or r['provider']}/{r['model']}", r["id"])
         ep = getattr(self, "_ep", None)
         if ep:
             for combo, field in ((self.text_model, "image_config_id"),):
@@ -479,9 +483,10 @@ class EpisodePage(QWidget):
         self._reload_assets()
 
     def _face_swap(self, character_id: int):
-        ok, msg = face_swap.health()
+        cfg_id = self.face_model.currentData()
+        ok, msg = face_swap.health(config_id=cfg_id)
         if not ok:
-            QMessageBox.warning(self, tr("face_swap"), f"换脸服务不可达(127.0.0.1:5678):{msg}")
+            QMessageBox.warning(self, tr("face_swap"), f"换脸服务不可达:{msg}")
             return
         c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
         if not c["image_url"]:
@@ -493,7 +498,7 @@ class EpisodePage(QWidget):
             return
         def job(tid):
             target = config.media_url_to_path(c["image_url"])
-            out = face_swap.swap_one(target, p)
+            out = face_swap.swap_one(target, p, config_id=cfg_id)
             db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), character_id))
             return str(out)

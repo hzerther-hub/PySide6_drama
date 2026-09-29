@@ -59,8 +59,10 @@ class MainWindow(QMainWindow):
         tlay.addWidget(logo)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        for key, icon in [("projects", "📁"), ("merger", "🎞"), ("face_swap", "🎭")]:
-            b = QPushButton(f"{icon} {tr(key) if key != 'projects' else tr('nav_projects')}")
+        self._nav_defs = [("projects", "📁", "nav_projects"), ("merger", "🎞", "nav_merger"),
+                          ("face_swap", "🎭", "nav_faceswap")]
+        for key, icon, label_key in self._nav_defs:
+            b = QPushButton(f"{icon} {tr(label_key)}")
             b.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self._goto(k))
@@ -105,6 +107,12 @@ class MainWindow(QMainWindow):
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
 
+    def retranslate(self):
+        """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""
+        self.setWindowTitle(tr("app_title"))
+        for key, icon, label_key in self._nav_defs:
+            self.nav_btns[key].setText(f"{icon} {tr(label_key)}")
+
     def _goto(self, key: str):
         page = {"projects": self.projects_page,
                 "merger": self.merger_page,
@@ -113,7 +121,7 @@ class MainWindow(QMainWindow):
         if key == "projects":
             self.projects_page.reload()
         if key == "face_swap":
-            self.face_page._check_health()
+            self.face_page.reload_models()
 
     def _new_project(self):
         dlg = NewProjectDialog(self)
@@ -226,8 +234,12 @@ class MainWindow(QMainWindow):
         apply_theme(QApplication.instance(), new)
 
     def _open_settings(self):
-        dlg = SettingsDialog(self, on_theme_changed=self._apply_theme_cb)
+        dlg = SettingsDialog(self, on_language_changed=self._on_language_changed,
+                             on_theme_changed=self._apply_theme_cb)
         dlg.exec()
+
+    def _on_language_changed(self, lang: str):
+        self.retranslate()
 
     def _apply_theme_cb(self, mode: str):
         from PySide6.QtWidgets import QApplication

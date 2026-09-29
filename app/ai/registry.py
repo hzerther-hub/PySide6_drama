@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..core import db
 
-SERVICE_TYPES = ["text", "image", "video", "tts"]
+SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap"]
 
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
@@ -51,9 +51,15 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "豆包语音(火山引擎)", "provider": "volcengine",
          "base_url": "https://openspeech.bytedance.com", "models": ["BV001_streaming"]},
     ],
+    "faceswap": [
+        {"name": "本地 InsightFace (CPU)", "provider": "local-insightface",
+         "base_url": "http://127.0.0.1:5678", "models": ["inswapper_128"]},
+        {"name": "远程换脸服务(自填地址)", "provider": "remote-faceswap",
+         "base_url": "https://your-face-server.example.com", "models": ["inswapper_128"]},
+    ],
 }
 
-SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音"}
+SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音", "faceswap": "换脸"}
 
 # 各 provider 的可选模型候选(新建时展示;对齐原版设置页展示)
 MODEL_CHOICES: dict[str, list[str]] = {
@@ -151,3 +157,10 @@ def apply_yihao_key(api_key: str) -> list[str]:
 def seed_tts_default() -> None:
     if not (q_tts := db.q1("SELECT id FROM ai_service_configs WHERE service_type='tts'")):
         add_config("tts", "volcengine", "https://openspeech.bytedance.com", "BV001_streaming", remark="默认豆包语音")
+
+
+def seed_faceswap_default() -> None:
+    """首次启动种子:本地 InsightFace 换脸服务(可再自行添加远程配置)。"""
+    if not (row := db.q1("SELECT id FROM ai_service_configs WHERE service_type='faceswap'")):
+        add_config("faceswap", "local-insightface", "http://127.0.0.1:5678",
+                   "inswapper_128", remark="本地 InsightFace", priority=0)
