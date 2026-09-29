@@ -60,6 +60,47 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
     return content
 
 
+def write_chapter_with_review(episode_id: int, config_id: int | None = None) -> dict:
+    """写章 → 六维审校 → 有问题带清单重写一轮(对齐原版 batch 修复循环)。"""
+    content = write_chapter(episode_id, config_id=config_id)
+    try:
+        review = review_chapter(episode_id, config_id=config_id)
+    except Exception:  # noqa: BLE001
+        return {"content": content, "review": None, "fixed": False}
+    if isinstance(review, dict) and review.get("overall") == "fix":
+        issues = []
+        for dim, v in (review.get("dimensions") or {}).items():
+            if isinstance(v, dict) and not v.get("pass", True):
+                issues.append(f"[{dim}] " + "; ".join(v.get("issues", [])[:3]))
+        if issues:
+            fix_prompt = "审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8]) \
+                         + f"\n\n原正文:\n{content[:14000]}"
+            fixed = runner.run_agent("novel_editor", fix_prompt, config_id=config_id)
+            db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
+            return {"content": fixed, "review": review, "fixed": True}
+    return {"content": content, "review": review, "fixed": False}
+
+
+def generate_cover(drama_id: int, config_id: int | None = None) -> str:
+    from ..ai import image_client
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
+    if not d:
+        raise RuntimeError("项目不存在")
+    style = db.style_prompt(d["style"] or "3d")
+    prompt = (f"{style}, 小说封面插图, 竖版海报构图, 核心场景与主角形象, "
+              f"主题: {(d['novel_outline'] or d['title'])[:200]}, 电影质感, 无文字")
+    out, _p = image_client.generate_image(prompt, out_name=f"cover_{drama_id}.png", config_id=config_id)
+    url = config.path_to_media_url(out)
+    db.ex("UPDATE dramas SET thumbnail=?, updated_at=? WHERE id=?", (url, db.now(), drama_id))
+    return url
+
+
+def save_plan(drama_id: int, outline: str, world: str, contract: str, volume: str) -> None:
+    """策划面板手动保存四件套(章节清单经 novel_planner 重新生成)。"""
+    db.ex("""UPDATE dramas SET novel_outline=?, novel_world=?, novel_contract=?, novel_volume=?, updated_at=? WHERE id=?""",
+          (outline, world, contract, volume, db.now(), drama_id))
+
+
 def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
     """六维审校,结果存 episodes.review_json。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))

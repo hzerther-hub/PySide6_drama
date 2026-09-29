@@ -159,14 +159,70 @@ class EpisodePage(QWidget):
     def _reload_models(self):
         for combo, stype in ((self.text_model, "text"), (self.image_model, "image"),
                              (self.video_model, "video"), (self.face_model, "faceswap")):
+            combo.blockSignals(True)
             combo.clear()
             combo.addItem(tr("configured"), None)
             for r in registry.list_configs(stype):
                 combo.addItem(f"{r['remark'] or r['provider']}/{r['model']}", r["id"])
+            # 恢复上次选择(全局记忆)
+            saved = db.get_setting(f"yihao.model.{stype}")
+            if saved:
+                i = combo.findData(int(saved))
+                if i >= 0:
+                    combo.setCurrentIndex(i)
+            combo.blockSignals(False)
+            combo.currentIndexChanged.connect(lambda _i, c=combo, s=stype: self._remember_model(c, s))
+        # 集级锁定(创建集后首次生成即锁定图片/视频配置,对齐原版)
         ep = getattr(self, "_ep", None)
         if ep:
-            for combo, field in ((self.text_model, "image_config_id"),):
-                pass  # 集锁定模型后续扩展;默认走全局默认项
+            for combo, col in ((self.image_model, "image_config_id"), (self.video_model, "video_config_id")):
+                locked = ep[col]
+                if locked:
+                    i = combo.findData(locked)
+                    if i >= 0:
+                        combo.blockSignals(True)
+                        combo.setCurrentIndex(i)
+                        combo.setItemText(i, "🔒 " + combo.itemText(i))
+                        combo.blockSignals(False)
+        self.video_model.currentIndexChanged.connect(self._sync_res_tiers)
+        self._sync_res_tiers()
+        saved_res = db.get_setting("yihao.resolution")
+        if saved_res:
+            i = self.res_combo.findText(saved_res)
+            if i >= 0:
+                self.res_combo.setCurrentIndex(i)
+        self.res_combo.currentTextChanged.connect(lambda t: db.set_setting("yihao.resolution", t))
+
+    def _remember_model(self, combo, stype: str):
+        cid = combo.currentData()
+        if cid:
+            db.set_setting(f"yihao.model.{stype}", str(cid))
+        # 集级锁定回写
+        ep = getattr(self, "_ep", None)
+        if ep:
+            col = {"image": "image_config_id", "video": "video_config_id"}.get(stype)
+            if col:
+                db.ex(f"UPDATE episodes SET {col}=?, updated_at=? WHERE id=?",
+                      (cid, db.now(), self.episode_id))
+                self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+
+    def _sync_res_tiers(self):
+        """分辨率档位随视频厂商联动(对齐原版 RESOLUTION_TIERS)。"""
+        from ..ai.video_client import RESOLUTION_TIERS
+        cid = self.video_model.currentData()
+        provider = None
+        if cid:
+            row = db.q1("SELECT provider FROM ai_service_configs WHERE id=?", (cid,))
+            provider = row["provider"] if row else None
+        tiers = RESOLUTION_TIERS.get(provider or "", ["480p", "720p", "1080p"])
+        cur = self.res_combo.currentText()
+        self.res_combo.blockSignals(True)
+        self.res_combo.clear()
+        for t in tiers:
+            self.res_combo.addItem(t)
+        if cur in tiers:
+            self.res_combo.setCurrentText(cur)
+        self.res_combo.blockSignals(False)
 
     def _goto_step(self, key: str):
         self._step = key
@@ -233,6 +289,21 @@ class EpisodePage(QWidget):
         bar.addWidget(batch_btn)
         bar.addWidget(save_btn)
         lay.addLayout(bar)
+        # 小说线第二行:策划 / 审校 / 按指令改稿 / 封面
+        bar2 = QHBoxLayout()
+        plan_btn = QPushButton("📖 策划与设定")
+        plan_btn.clicked.connect(self._open_plan)
+        review_btn = QPushButton("🔎 AI 六维审校")
+        review_btn.clicked.connect(self._review_chapter)
+        self.edit_instr = QLineEdit()
+        self.edit_instr.setPlaceholderText("按指令改稿:如「把开头改得更抓人」「加强母亲戏份」")
+        edit_btn = QPushButton("✏ 改稿")
+        edit_btn.clicked.connect(self._edit_chapter)
+        bar2.addWidget(plan_btn)
+        bar2.addWidget(review_btn)
+        bar2.addWidget(self.edit_instr, 1)
+        bar2.addWidget(edit_btn)
+        lay.addLayout(bar2)
         lay.addWidget(self.raw_edit)
 
     def _reload_raw(self):
@@ -253,9 +324,15 @@ class EpisodePage(QWidget):
             if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
                 idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
                 novel_pipe.plan_novel(self.drama_id, idea, config_id=self.text_model.currentData())
-            return novel_pipe.write_chapter(self.episode_id, config_id=self.text_model.currentData())
+            return novel_pipe.write_chapter_with_review(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, err):
-            self._reload_raw() if not err else QMessageBox.warning(self, "AI", str(err)[:400])
+            if err:
+                QMessageBox.warning(self, "AI", str(err)[:400])
+            else:
+                self._reload_raw()
+                r = (result or {})
+                msg = "本章已生成" + (";审校发现问题并已自动修复一轮 ✅" if r.get("fixed") else "")
+                QMessageBox.information(self, tr("ai_novel"), msg)
         self._save_raw_silent()
         TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
@@ -275,12 +352,51 @@ class EpisodePage(QWidget):
         def job(tid):
             outs = []
             for eid in ids:
-                outs.append(novel_pipe.write_chapter(eid, config_id=self.text_model.currentData()))
+                outs.append(novel_pipe.write_chapter_with_review(eid, config_id=self.text_model.currentData()))
             return outs
         def done(tid, result, err):
             if err:
                 QMessageBox.warning(self, "AI", str(err)[:400])
+            else:
+                fixed = sum(1 for r in (result or []) if r and r.get("fixed"))
+                QMessageBox.information(self, tr("batch_write"),
+                                        f"完成 {len(result or [])} 章,其中 {fixed} 章经审校自动修复")
         TASKMGR.submit("novel_batch", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+
+    def _open_plan(self):
+        from .novel_dialogs import NovelPlanDialog
+        self._save_raw_silent()
+        NovelPlanDialog(self, self.drama_id).exec()
+
+    def _review_chapter(self):
+        self._save_raw_silent()
+        from .novel_dialogs import ReviewDialog
+        from ..pipeline import novel as novel_pipe
+        def job(tid):
+            return novel_pipe.review_chapter(self.episode_id, config_id=self.text_model.currentData())
+        def done(tid, result, err):
+            if err:
+                QMessageBox.warning(self, "AI", str(err)[:400])
+            else:
+                ReviewDialog(self, result or {}, self._ep["episode_number"]).exec()
+        TASKMGR.submit("review", job, done, episode_id=self.episode_id)
+
+    def _edit_chapter(self):
+        instr = self.edit_instr.text().strip()
+        if not instr:
+            self.edit_instr.setFocus()
+            return
+        self._save_raw_silent()
+        from ..pipeline import novel as novel_pipe
+        def job(tid):
+            return novel_pipe.edit_chapter(self.episode_id, instr, config_id=self.text_model.currentData())
+        def done(tid, result, err):
+            if err:
+                QMessageBox.warning(self, "AI", str(err)[:400])
+            else:
+                self._reload_raw()
+                self.edit_instr.clear()
+        TASKMGR.submit("novel_edit", job, done, episode_id=self.episode_id)
 
     def _save_raw_silent(self):
         db.ex("UPDATE episodes SET content=?, target_words=?, updated_at=? WHERE id=?",
@@ -347,13 +463,92 @@ class EpisodePage(QWidget):
         lay.addLayout(bar)
         self.asset_stat = QLabel("")
         self.asset_stat.setObjectName("muted")
-        lay.addWidget(self.asset_stat)
         self.asset_empty = QLabel("—" + tr("extract") + "—")
         self.asset_empty.setObjectName("muted")
         self.asset_empty.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.asset_empty)
         self.asset_list = QVBoxLayout()
-        lay.addLayout(self.asset_list)
+        # 漫画资产 tab(真实页:角色/场景/道具 漫画风格镜像图)
+        self.asset_tabs = QTabWidget()
+        normal_tab = QWidget()
+        n_lay = QVBoxLayout(normal_tab)
+        n_lay.setContentsMargins(0, 6, 0, 6)
+        n_lay.addWidget(self.asset_stat)
+        n_lay.addWidget(self.asset_empty)
+        n_lay.addLayout(self.asset_list)
+        n_lay.addStretch(1)
+        n_scroll = QScrollArea()
+        n_scroll.setWidgetResizable(True)
+        n_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        n_holder = QWidget()
+        n_holder.setLayout(n_lay)
+        n_scroll.setWidget(n_holder)
+        self.asset_tabs.addTab(n_scroll, tr("normal_assets"))
+        comic_tab = QWidget()
+        c_lay = QVBoxLayout(comic_tab)
+        c_bar = QHBoxLayout()
+        c_bar.addWidget(W.muted("漫画风格镜像资产(与常规资产行独立,用于条漫出图)"))
+        c_bar.addStretch(1)
+        c_batch = W.primary_btn("🎨 " + tr("batch_image"))
+        c_batch.clicked.connect(self._batch_comic_assets)
+        c_bar.addWidget(c_batch)
+        c_lay.addLayout(c_bar)
+        self.comic_asset_list = QVBoxLayout()
+        c_lay.addLayout(self.comic_asset_list)
+        c_lay.addStretch(1)
+        c_scroll = QScrollArea()
+        c_scroll.setWidgetResizable(True)
+        c_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        c_holder = QWidget()
+        c_holder.setLayout(c_lay)
+        c_scroll.setWidget(c_holder)
+        self.asset_tabs.addTab(c_scroll, tr("comic_assets"))
+        lay.addWidget(self.asset_tabs, 1)
+
+    def _gen_comic_asset(self, kind: str, row_id: int):
+        from ..pipeline import comic as comic_pipe
+        def job(tid):
+            return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
+                                                config_id=self.image_model.currentData())
+        def done(tid, result, err):
+            if err:
+                QMessageBox.warning(self, "AI", str(err)[:400])
+            self._reload_comic_assets()
+        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+    def _batch_comic_assets(self):
+        for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+            for r in db.q(f"SELECT id FROM {table} WHERE drama_id=? AND comic_image_url IS NULL", (self.drama_id,)):
+                self._gen_comic_asset(kind, r["id"])
+
+    def _reload_comic_assets(self):
+        if not getattr(self, "comic_asset_list", None):
+            return
+        while self.comic_asset_list.count():
+            item = self.comic_asset_list.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        for kind, table, label in (("character", "characters", tr("chars")),
+                                   ("scene", "scenes", tr("scenes")),
+                                   ("prop", "props", tr("props"))):
+            for r in db.q(f"SELECT * FROM {table} WHERE drama_id=? ORDER BY id", (self.drama_id,)):
+                box = W.make_card()
+                lay = QHBoxLayout(box)
+                lay.setContentsMargins(10, 6, 10, 6)
+                img = QLabel()
+                img.setPixmap(W.pixmap_from_media(r["comic_image_url"], 72))
+                img.setFixedWidth(80)
+                lay.addWidget(img)
+                name = W.h2(r["name"])
+                lay.addWidget(name)
+                lay.addWidget(W.tag(label))
+                if r["comic_image_url"]:
+                    lay.addWidget(W.tag(tr("generated")))
+                lay.addStretch(1)
+                btn = QPushButton(tr("redraw"))
+                btn.clicked.connect(lambda _=False, k=kind, i=r["id"]: self._gen_comic_asset(k, i))
+                lay.addWidget(btn)
+                self.comic_asset_list.addWidget(box)
 
     def _extract(self, scope: str):
         def job(tid):
@@ -430,10 +625,21 @@ class EpisodePage(QWidget):
             swap = QPushButton(tr("face_swap"))
             swap.clicked.connect(lambda _=False, r=row: self._face_swap(r["id"]))
             btns.addWidget(swap)
+            var = QPushButton("🎨 变体")
+            var.setToolTip("造型变体(多套服装造型)")
+            var.clicked.connect(lambda _=False, r=row: self._open_variants(r["id"]))
+            btns.addWidget(var)
         for b in (gen_prompt, redraw, upload):
             btns.addWidget(b)
         lay.addLayout(btns)
         return box
+
+    def _open_variants(self, character_id: int):
+        from .variants_dialog import VariantsDialog
+        c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
+        if c:
+            VariantsDialog(self, dict(c)).exec()
+            self._reload_assets()
 
     def _gen_prompt(self, row_id: int, kind: str):
         fn = {"character": prompts_gen.character_prompt, "scene": prompts_gen.scene_prompt,
@@ -542,33 +748,83 @@ class EpisodePage(QWidget):
         num = QLabel(f"#{r['storyboard_number']:02d}")
         num.setObjectName("h2")
         head.addWidget(num)
-        status = (tr("done") if r["video_url"] else
+        status = (tr("done") if (r["video_url"] or r["composed_video_url"]) else
                   (tr("in_progress") if r.get("status") == "processing" else tr("pending")))
         head.addWidget(W.tag(status))
         head.addWidget(W.tag(f"{int(r['duration'] or 0)}s"))
+        if r["first_frame_image"]:
+            head.addWidget(W.tag("首帧✓"))
         head.addStretch(1)
-        redo = QPushButton(tr("redraw"))
-        redo.clicked.connect(lambda _=False, i=r["id"]: self._one_video(i))
+        ff_btn = QPushButton("🖼 首帧")
+        ff_btn.setToolTip("生成本镜头首帧图")
+        ff_btn.clicked.connect(lambda _=False, i=r["id"]: self._gen_first_frame(i))
+        i2v_btn = QPushButton("🎬 图生")
+        i2v_btn.setToolTip("用首帧图生成视频(图生视频,注入 @角色 参考图)")
+        i2v_btn.clicked.connect(lambda _=False, i=r["id"]: self._compose_i2v(i))
+        sub_btn = QPushButton("T 字幕")
+        sub_btn.setToolTip("把旁白/台词烧录为字幕版本")
+        sub_btn.clicked.connect(lambda _=False, i=r["id"]: self._burn_sub(i))
         tts_btn = QPushButton("🔊")
         tts_btn.setToolTip(tr("narration"))
         tts_btn.clicked.connect(lambda _=False, i=r["id"]: self._one_tts(i))
+        redo = QPushButton(tr("redraw"))
+        redo.clicked.connect(lambda _=False, i=r["id"]: self._one_video(i))
         play = QPushButton("▶")
         play.setToolTip("播放")
-        play.setEnabled(bool(r["video_url"]))
-        play.clicked.connect(lambda _=False, u=r["video_url"]: self._play_video(u))
-        head.addWidget(tts_btn)
-        head.addWidget(redo)
-        head.addWidget(play)
+        play.setEnabled(bool(r["video_url"] or r["composed_video_url"]))
+        play.clicked.connect(lambda _=False, u=r["video_url"] or r["composed_video_url"]: self._play_video(u))
+        for b in (ff_btn, i2v_btn, sub_btn, tts_btn, redo, play):
+            head.addWidget(b)
         lay.addLayout(head)
         content = QLabel(r["content"] or "")
         content.setWordWrap(True)
         lay.addWidget(content)
+        vp = QLineEdit(r["video_prompt"] or "")
+        vp.setPlaceholderText("视频提示词(可逐镜微调,@角色 自动注入参考图)")
+        vp.editingFinished.connect(lambda li=r["id"], t=vp: db.ex(
+            "UPDATE storyboards SET video_prompt=? WHERE id=?", (t.text(), li)))
+        lay.addWidget(vp)
         narr = QLineEdit(r["narration"] or "")
         narr.setPlaceholderText(tr("narration_hint"))
         narr.editingFinished.connect(lambda li=r["id"], t=narr: db.ex(
             "UPDATE storyboards SET narration=? WHERE id=?", (t.text(), li)))
         lay.addWidget(narr)
         return box
+
+    def _gen_first_frame(self, sb_id: int):
+        from ..pipeline import shot_tools
+        def job(tid):
+            return shot_tools.generate_first_frame(self.episode_id, sb_id,
+                                                   config_id=self.image_model.currentData())
+        def done(tid, result, err):
+            if err:
+                QMessageBox.warning(self, "🖼", str(err)[:400])
+            self._reload_storyboard()
+        TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
+    def _compose_i2v(self, sb_id: int):
+        from ..pipeline import shot_tools
+        db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
+        res = self.res_combo.currentText()
+        def job(tid):
+            return shot_tools.compose_from_image(self.episode_id, sb_id, res,
+                                                 config_id=self.video_model.currentData())
+        def done(tid, result, err):
+            if err:
+                db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
+                QMessageBox.warning(self, "🎬", str(err)[:400])
+            self._reload_storyboard()
+        TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
+    def _burn_sub(self, sb_id: int):
+        from ..pipeline import shot_tools
+        def job(tid):
+            return shot_tools.burn_subtitle(sb_id)
+        def done(tid, result, err):
+            if err:
+                QMessageBox.warning(self, "T", str(err)[:400])
+            self._reload_storyboard()
+        TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _split_sb(self):
         def job(tid):
@@ -594,9 +850,22 @@ class EpisodePage(QWidget):
         self._gen_video_job(sb_id)
 
     def _batch_video(self):
-        rows = db.q("SELECT id FROM storyboards WHERE episode_id=? AND video_url IS NULL", (self.episode_id,))
+        rows = db.q("SELECT id FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
+                    (self.episode_id,))
         if not rows:
             QMessageBox.information(self, tr("batch_video"), "全部镜头已有视频")
+            return
+        # 批量生成前确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
+        total = db.q1("SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
+                      (self.episode_id,))["s"]
+        model_txt = self.video_model.currentText()
+        stats = TASKMGR.ep_video_stats(self.episode_id)
+        ret = QMessageBox.question(
+            self, tr("batch_video"),
+            f"即将生成 {len(rows)} 个镜头(约 {int(total)}s)\n模型:{model_txt}\n分辨率:{self.res_combo.currentText()}\n"
+            f"当前任务:{tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}\n\n确认开始?",
+            QMessageBox.Yes | QMessageBox.No)
+        if ret != QMessageBox.Yes:
             return
         for r in rows:
             self._gen_video_job(r["id"])
@@ -604,12 +873,15 @@ class EpisodePage(QWidget):
     def _gen_video_job(self, sb_id: int):
         res = self.res_combo.currentText()
         def job(tid):
+            from ..pipeline import shot_tools
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
             prompt = sb["video_prompt"] or sb["content"]
+            refs = shot_tools.collect_reference_images(self.episode_id, sb["content"] or "")
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
-                first_frame=sb["first_frame_image"], config_id=self.video_model.currentData())
+                first_frame=sb["first_frame_image"], reference_images=refs,
+                config_id=self.video_model.currentData())
             db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
                   (config.path_to_media_url(path), db.now(), sb_id))
             return str(path)

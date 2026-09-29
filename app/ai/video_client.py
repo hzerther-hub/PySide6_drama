@@ -56,8 +56,14 @@ def _poll(fetch_status, interval: int, rounds: int) -> str:
 
 
 def generate_video(prompt: str, resolution: str = "720p", duration: int | None = None,
-                   first_frame: str | None = None, config_id: int | None = None) -> tuple[Path, str]:
-    """文生视频 / 图生视频(first_frame 本地路径)。返回 (本地路径, provider)。"""
+                   first_frame: str | None = None, config_id: int | None = None,
+                   reference_images: list[str] | None = None) -> tuple[Path, str]:
+    """文生视频 / 图生视频(first_frame 本地路径)。
+
+    reference_images:@角色 形象参考图本地路径列表(角色一致性)。
+    agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
+    返回 (本地路径, provider)。
+    """
     cfg = registry.default_config("video", config_id)
     if not cfg:
         raise AIError("未配置视频生成服务,请到「设置 → AI 服务」添加。")
@@ -66,12 +72,16 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
     base = cfg["base_url"].rstrip("/")
+    refs = [_local_to_data_url(r) for r in (reference_images or [])][:4]
 
     if provider == "volcengine":
         body: dict = {"model": cfg["model"], "content": [
             {"type": "text", "text": prompt + f" --resolution {resolution}" +
              (f" --duration {duration}" if duration else "") +
              (" --ratio 16:9" if resolution.lower() not in ("720p", "1080p", "480p") else "")}]}
+        for ref in refs:
+            body["content"].append({"type": "image_url", "image_url": {"url": ref},
+                                    "role": "reference_image"})
         if first_frame:
             body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame)}})
         resp = requests.post(f"{base}/contents/generations/tasks", json=body, headers=headers, timeout=120)
@@ -95,9 +105,6 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
         if first_frame:
             body["first_frame_image"] = _local_to_data_url(first_frame)
         resp = requests.post(f"{base}/video_generation", json=body, headers=headers, timeout=120)
-        if resp.status_code not in (200, 201):
-            raise AIError(f"MiniMax 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
-        task_id = resp.json().get("task_id")
 
         def check2():
             st = requests.get(f"{base}/query/video_generation?task_id={task_id}", headers=headers, timeout=30).json()
@@ -133,6 +140,8 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
         body: dict = {"model": cfg["model"], "prompt": prompt, "resolution": resolution}
         if duration:
             body["duration"] = duration
+        if refs:
+            body["reference_images"] = refs  # 多模态参考(@角色 一致性)
         if first_frame:
             body["image"] = _local_to_data_url(first_frame)
         resp = requests.post(f"{base}/v1/videos/generations", json=body, headers=headers, timeout=120)
