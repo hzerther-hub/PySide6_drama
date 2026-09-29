@@ -65,18 +65,18 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, k=key: self._goto(k))
             self.nav_btns[key] = b
             tlay.addWidget(b)
-        lang_btn = QPushButton("🌐 " + tr("ui_language"))
-        lang_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
-        lang_btn.clicked.connect(self._switch_language)
         theme_btn = QPushButton("🌓 " + tr("theme"))
         theme_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         theme_btn.clicked.connect(self._toggle_theme)
         settings_btn = QPushButton("⚙️ " + tr("nav_settings"))
         settings_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         settings_btn.clicked.connect(self._open_settings)
-        tlay.addWidget(lang_btn)
+        lang_btn = QPushButton("🌐 " + tr("lang_short"))
+        lang_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
+        lang_btn.clicked.connect(self._switch_language)
         tlay.addWidget(theme_btn)
         tlay.addWidget(settings_btn)
+        tlay.addWidget(lang_btn)
         root.addWidget(top)
 
         # 页面栈

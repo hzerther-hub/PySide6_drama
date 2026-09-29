@@ -24,7 +24,7 @@ LANG_OUTPUT_NAME = {
 _current = "zh"
 
 Z = {  # 中文(基准)
- "app_title": "易好短剧", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具", "nav_faceswap": "换脸",
+ "app_title": "易好短剧", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具", "nav_faceswap": "换脸", "lang_short": "语言",
  "projects": "项目启动台", "tagline": "从一个创意到一部短剧,AI 全流程为你代工",
  "stat_projects": "{} 个项目", "stat_running": "{} 进行中", "stat_styles": "{} 种视觉风格",
  "filter_all": "全部", "filter_pending": "待开始", "filter_running": "进行中", "filter_done": "已完成",
@@ -87,7 +87,7 @@ def _t(src: dict, **over) -> dict:
 T: dict[str, dict] = {"zh": Z}
 
 T["en"] = _t(Z,
- app_title="Yihao Shorts", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger", nav_faceswap="Face Swap",
+ app_title="Yihao Shorts", nav_projects="Projects", nav_settings="Settings", nav_merger="Merger", nav_faceswap="Face Swap", lang_short="Language",
  projects="Project Launchpad", tagline="From an idea to a short drama — AI handles the whole pipeline",
  stat_projects="{} projects", stat_running="{} in progress", stat_styles="{} visual styles",
  filter_all="All", filter_pending="To start", filter_running="In progress", filter_done="Completed",
@@ -140,6 +140,7 @@ T["en"] = _t(Z,
 )
 
 T["ja"] = _t(T["en"], app_title="易好短劇", nav_projects="プロジェクト", nav_settings="設定", nav_merger="結合ツール",
+ lang_short="言語",
  projects="プロジェクト", tagline="アイデアからショートドラマまで、AI が全工程を代行",
  stat_projects="{} プロジェクト", stat_running="{} 進行中", stat_styles="{} スタイル", filter_all="全部", filter_pending="未着手",
  filter_running="進行中", filter_done="完了", sort_recent="最近の更新", search="検索", new_project="新規プロジェクト",
@@ -156,8 +157,8 @@ T["ja"] = _t(T["en"], app_title="易好短劇", nav_projects="プロジェクト
  merger_title="ロスレス結合", import_files="ファイル読込", import_folder="フォルダ読込", detect="判定", merge_now="結合開始",
  movie_quality="映画的クオリティ",
 )
-
 T["ko"] = _t(T["en"], app_title="이하오 숏드라마", nav_projects="프로젝트", nav_settings="설정", nav_merger="병합 도구",
+ lang_short="언어",
  projects="프로젝트 대시보드", tagline="아이디어에서 숏드라마까지, AI가 전 과정을 담당",
  stat_projects="{} 프로젝트", stat_running="{} 진행 중", stat_styles="{} 스타일", filter_all="전체", filter_pending="시작 전",
  filter_running="진행 중", filter_done="완료", sort_recent="최근 업데이트", search="검색", new_project="새 프로젝트",
@@ -174,8 +175,8 @@ T["ko"] = _t(T["en"], app_title="이하오 숏드라마", nav_projects="프로�
  merger_title="무손실 병합", import_files="파일 가져오기", import_folder="폴더 가져오기", detect="검사", merge_now="병합 시작",
  movie_quality="영화적 질감",
 )
-
 T["fr"] = _t(T["en"], app_title="Yihao Shorts (PySide6)", nav_projects="Projets", nav_settings="Paramètres", nav_merger="Fusion",
+ lang_short="Langue",
  projects="Projets", tagline="D'une idée à un court-métrage, l'IA gère tout",
  stat_projects="{} projets", stat_running="{} en cours", stat_styles="{} styles", filter_all="Tout", filter_pending="À commencer",
  filter_running="En cours", filter_done="Terminé", sort_recent="Récents", search="Rechercher", new_project="Nouveau projet",
@@ -193,8 +194,8 @@ T["fr"] = _t(T["en"], app_title="Yihao Shorts (PySide6)", nav_projects="Projets"
  merger_title="Fusion sans perte", import_files="Importer fichiers", import_folder="Importer dossier", detect="Analyser",
  merge_now="Fusionner", movie_quality="qualité cinéma",
 )
-
 T["de"] = _t(T["en"], nav_projects="Projekte", nav_settings="Einstellungen", nav_merger="Merger", projects="Projekte",
+ lang_short="Sprache",
  tagline="Von der Idee zum Kurzfilm – die KI übernimmt alles", stat_projects="{} Projekte", stat_running="{} laufend",
  stat_styles="{} Stilrichtungen", filter_all="Alle", filter_pending="Ausstehend", filter_running="Laufend", filter_done="Fertig",
  sort_recent="Zuletzt aktualisiert", search="Projekte suchen", new_project="Neues Projekt", open_project="Öffnen",
@@ -212,8 +213,8 @@ T["de"] = _t(T["en"], nav_projects="Projekte", nav_settings="Einstellungen", nav
  merger_title="Verlustfreies Zusammenführen", import_files="Dateien importieren", import_folder="Ordner importieren",
  detect="Prüfen", merge_now="Zusammenführen", movie_quality="Filmlook",
 )
-
 T["it"] = _t(T["en"], nav_projects="Progetti", nav_settings="Impostazioni", nav_merger="Unione", projects="Progetti",
+ lang_short="Lingua",
  tagline="Da un'idea a una serie breve: l'IA fa tutto", stat_projects="{} progetti", stat_running="{} in corso",
  stat_styles="{} stili", filter_all="Tutti", filter_pending="Da iniziare", filter_running="In corso", filter_done="Completati",
  sort_recent="Recenti", search="Cerca", new_project="Nuovo progetto", open_project="Apri", delete_project="Elimina", more="Altro",
@@ -230,8 +231,8 @@ T["it"] = _t(T["en"], nav_projects="Progetti", nav_settings="Impostazioni", nav_
  version="Versione", check_update="Verifica aggiornamenti", merger_title="Unione senza perdita", import_files="Importa file",
  import_folder="Importa cartella", detect="Analizza", merge_now="Unisci", movie_quality="qualità cinematografica",
 )
-
 T["pt"] = _t(T["en"], nav_projects="Projetos", nav_settings="Configurações", nav_merger="União", projects="Projetos",
+ lang_short="Idioma",
  tagline="De uma ideia a um curta — a IA cuida de tudo", stat_projects="{} projetos", stat_running="{} em andamento",
  stat_styles="{} estilos", filter_all="Todos", filter_pending="A iniciar", filter_running="Em andamento", filter_done="Concluídos",
  sort_recent="Recentes", search="Pesquisar", new_project="Novo projeto", open_project="Abrir", delete_project="Excluir",
@@ -248,8 +249,8 @@ T["pt"] = _t(T["en"], nav_projects="Projetos", nav_settings="Configurações", n
  dark="Escuro", version="Versão", check_update="Verificar atualização", merger_title="União sem perdas", import_files="Importar arquivos",
  import_folder="Importar pasta", detect="Analisar", merge_now="Unir", movie_quality="qualidade cinematográfica",
 )
-
 T["es"] = _t(T["en"], nav_projects="Proyectos", nav_settings="Ajustes", nav_merger="Fusionador", projects="Proyectos",
+ lang_short="Idioma",
  tagline="De una idea a un cortometraje: la IA lo hace todo", stat_projects="{} proyectos", stat_running="{} en curso",
  stat_styles="{} estilos", filter_all="Todos", filter_pending="Por iniciar", filter_running="En curso", filter_done="Completados",
  sort_recent="Recientes", search="Buscar", new_project="Nuevo proyecto", open_project="Abrir", delete_project="Eliminar",
@@ -267,8 +268,8 @@ T["es"] = _t(T["en"], nav_projects="Proyectos", nav_settings="Ajustes", nav_merg
  merger_title="Fusión sin pérdida", import_files="Importar archivos", import_folder="Importar carpeta", detect="Analizar",
  merge_now="Fusionar", movie_quality="calidad cinematográfica",
 )
-
 T["vi"] = _t(T["en"], nav_projects="Dự án", nav_settings="Cài đặt", nav_merger="Gộp video", projects="Dự án",
+ lang_short="Ngôn ngữ",
  tagline="Từ ý tưởng đến phim ngắn — AI lo toàn bộ quy trình", stat_projects="{} dự án", stat_running="{} đang chạy",
  stat_styles="{} phong cách", filter_all="Tất cả", filter_pending="Chưa bắt đầu", filter_running="Đang làm", filter_done="Hoàn thành",
  sort_recent="Mới cập nhật", search="Tìm dự án", new_project="Dự án mới", open_project="Mở", delete_project="Xóa", more="Thêm",
@@ -285,8 +286,8 @@ T["vi"] = _t(T["en"], nav_projects="Dự án", nav_settings="Cài đặt", nav_m
  check_update="Kiểm tra cập nhật", merger_title="Gộp không mất chất lượng", import_files="Nhập tệp", import_folder="Nhập thư mục",
  detect="Phân tích", merge_now="Gộp ngay", movie_quality="chất lượng điện ảnh",
 )
-
 T["tr"] = _t(T["en"], nav_projects="Projeler", nav_settings="Ayarlar", nav_merger="Birleştirici", projects="Projeler",
+ lang_short="Dil",
  tagline="Bir fikirden kısa diziye — yapay zeka tüm süreci yönetir", stat_projects="{} proje", stat_running="{} sürüyor",
  stat_styles="{} stil", filter_all="Tümü", filter_pending="Başlamadı", filter_running="Devam ediyor", filter_done="Tamamlandı",
  sort_recent="Son güncellenen", search="Proje ara", new_project="Yeni proje", open_project="Aç", delete_project="Sil", more="Daha",
@@ -303,8 +304,8 @@ T["tr"] = _t(T["en"], nav_projects="Projeler", nav_settings="Ayarlar", nav_merge
  check_update="Güncellemeyi denetle", merger_title="Kayıpsız birleştirme", import_files="Dosya içe aktar", import_folder="Klasör içe aktar",
  detect="Analiz et", merge_now="Birleştir", movie_quality="sinematik kalite",
 )
-
 T["ar"] = _t(T["en"], nav_projects="المشاريع", nav_settings="الإعدادات", nav_merger="أداة الدمج", projects="لوحة المشاريع",
+ lang_short="اللغة",
  tagline="من فكرة إلى دراما قصيرة — الذكاء الاصطناعي يتولى كل شيء", stat_projects="{} مشاريع", stat_running="{} قيد التنفيذ",
  stat_styles="{} أنماط بصرية", filter_all="الكل", filter_pending="لم يبدأ", filter_running="قيد التنفيذ", filter_done="مكتمل",
  sort_recent="الأحدث تحديثًا", search="بحث في المشاريع", new_project="مشروع جديد", open_project="فتح", delete_project="حذف",
@@ -322,8 +323,8 @@ T["ar"] = _t(T["en"], nav_projects="المشاريع", nav_settings="الإعد�
  merger_title="دمج بدون فقدان جودة", import_files="استيراد ملفات", import_folder="استيراد مجلد", detect="تحليل",
  merge_now="دمج الآن", movie_quality="جودة سينمائية",
 )
-
 T["hi"] = _t(T["en"], nav_projects="परियोजनाएँ", nav_settings="सेटिंग्स", nav_merger="मर्जर", projects="परियोजनाएँ",
+ lang_short="भाषा",
  tagline="आइडिया से शॉर्ट ड्रामा तक — AI पूरा काम करता है", stat_projects="{} परियोजनाएँ", stat_running="{} चल रहीं",
  stat_styles="{} विज़ुअल स्टाइल", filter_all="सभी", filter_pending="शेष", filter_running="चल रही", filter_done="पूर्ण",
  sort_recent="हाल के अपडेट", search="खोजें", new_project="नई परियोजना", open_project="खोलें", delete_project="हटाएँ",
@@ -340,8 +341,8 @@ T["hi"] = _t(T["en"], nav_projects="परियोजनाएँ", nav_setting
  dark="डार्क", version="संस्करण", check_update="अपडेट जाँचें", merger_title="लॉसलेस मर्जर", import_files="फ़ाइलें आयात करें",
  import_folder="फ़ोल्डर आयात करें", detect="जाँच", merge_now="मर्ज करें", movie_quality="सिनेमैटिक गुणवत्ता",
 )
-
 T["id"] = _t(T["en"], nav_projects="Proyek", nav_settings="Pengaturan", nav_merger="Penggabung", projects="Proyek",
+ lang_short="Bahasa",
  tagline="Dari ide ke drama pendek — AI mengerjakan semuanya", stat_projects="{} proyek", stat_running="{} berjalan",
  stat_styles="{} gaya visual", filter_all="Semua", filter_pending="Belum mulai", filter_running="Berjalan", filter_done="Selesai",
  sort_recent="Baru diperbarui", search="Cari proyek", new_project="Proyek baru", open_project="Buka", delete_project="Hapus",
@@ -358,8 +359,8 @@ T["id"] = _t(T["en"], nav_projects="Proyek", nav_settings="Pengaturan", nav_merg
  dark="Gelap", version="Versi", check_update="Periksa pembaruan", merger_title="Penggabungan lossless", import_files="Impor file",
  import_folder="Impor folder", detect="Analisis", merge_now="Gabungkan", movie_quality="kualitas sinematik",
 )
-
 T["th"] = _t(T["en"], nav_projects="โปรเจกต์", nav_settings="ตั้งค่า", nav_merger="เครื่องมือรวมวิดีโอ", projects="โปรเจกต์",
+ lang_short="ภาษา",
  tagline="จากไอเดียสู่ละครสั้น — AI ทำทั้งหมดให้", stat_projects="{} โปรเจกต์", stat_running="{} กำลังดำเนินการ",
  stat_styles="{} สไตล์", filter_all="ทั้งหมด", filter_pending="ยังไม่เริ่ม", filter_running="กำลังทำ", filter_done="เสร็จแล้ว",
  sort_recent="อัปเดตล่าสุด", search="ค้นหา", new_project="โปรเจกต์ใหม่", open_project="เปิด", delete_project="ลบ", more="เพิ่มเติม",
@@ -376,7 +377,6 @@ T["th"] = _t(T["en"], nav_projects="โปรเจกต์", nav_settings="ต
  merger_title="รวมวิดีโอแบบไม่สูญเสียคุณภาพ", import_files="นำเข้าไฟล์", import_folder="นำเข้าโฟลเดอร์", detect="วิเคราะห์",
  merge_now="รวมเลย", movie_quality="คุณภาพระดับภาพยนตร์",
 )
-
 
 def set_language(lang: str) -> None:
     global _current
