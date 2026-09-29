@@ -14,6 +14,7 @@ from ..core.i18n import LANGS, set_language, tr
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
 from .episode_page import EpisodePage
+from .face_swap_page import FaceSwapPage
 from .merger_tool_page import MergerToolPage
 from .new_project_dialog import NewProjectDialog
 from .project_page import ProjectPage
@@ -58,7 +59,7 @@ class MainWindow(QMainWindow):
         tlay.addWidget(logo)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        for key, icon in [("projects", "📁"), ("merger", "🎞")]:
+        for key, icon in [("projects", "📁"), ("merger", "🎞"), ("face_swap", "🎭")]:
             b = QPushButton(f"{icon} {tr(key) if key != 'projects' else tr('nav_projects')}")
             b.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
             b.setCursor(Qt.PointingHandCursor)
@@ -86,7 +87,9 @@ class MainWindow(QMainWindow):
         self.episode_page = EpisodePage()
         self.clone_page = ClonePage()
         self.merger_page = MergerToolPage()
-        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page, self.merger_page):
+        self.face_page = FaceSwapPage()
+        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
+                  self.merger_page, self.face_page):
             self.stack.addWidget(p)
         root.addWidget(self.stack, 1)
 
@@ -103,9 +106,14 @@ class MainWindow(QMainWindow):
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
 
     def _goto(self, key: str):
-        self.stack.setCurrentWidget(self.projects_page if key == "projects" else self.merger_page)
+        page = {"projects": self.projects_page,
+                "merger": self.merger_page,
+                "face_swap": self.face_page}.get(key, self.projects_page)
+        self.stack.setCurrentWidget(page)
         if key == "projects":
             self.projects_page.reload()
+        if key == "face_swap":
+            self.face_page._check_health()
 
     def _new_project(self):
         dlg = NewProjectDialog(self)
