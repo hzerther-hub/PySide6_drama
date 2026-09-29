@@ -57,6 +57,8 @@ class ProjectCard(QFrame):
         self.drama_id = drama["id"]
         self._title = drama["title"]
         self.setFixedHeight(196)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点击打开项目")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 10)
         lay.setSpacing(8)
@@ -73,11 +75,13 @@ class ProjectCard(QFrame):
         self.status_btn.setCursor(Qt.PointingHandCursor)
         self._apply_status_style(drama.get("status") or "pending")
         self.status_btn.clicked.connect(self._status_menu)
+        self.status_btn.pressed.connect(lambda: setattr(self, "_btn_clicked", True))
         top.addWidget(self.status_btn)
         more = QPushButton("···")
         more.setFixedWidth(34)
         more.setCursor(Qt.PointingHandCursor)
         more.clicked.connect(self._menu)
+        more.pressed.connect(lambda: setattr(self, "_btn_clicked", True))
         top.addWidget(more)
         lay.addLayout(top)
 
@@ -129,6 +133,16 @@ class ProjectCard(QFrame):
             self.open_requested.emit(self.drama_id)
         elif act == a2:
             self.delete_requested.emit(self.drama_id, self._title)
+
+
+    def mousePressEvent(self, ev):
+        """整卡可点打开项目(对齐原版);点在状态徽标/更多按钮上时不触发。"""
+        if getattr(self, "_btn_clicked", False):
+            self._btn_clicked = False
+            super().mousePressEvent(ev)
+            return
+        self.open_requested.emit(self.drama_id)
+        super().mousePressEvent(ev)
 
 
 def _dot_icon(color: str):
