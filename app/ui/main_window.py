@@ -14,8 +14,6 @@ from ..core.i18n import LANGS, set_language, tr
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
 from .episode_page import EpisodePage
-from .face_swap_page import FaceSwapPage
-from .merger_tool_page import MergerToolPage
 from .new_project_dialog import NewProjectDialog
 from .project_page import ProjectPage
 from .projects_page import ProjectsPage
@@ -59,8 +57,7 @@ class MainWindow(QMainWindow):
         tlay.addWidget(logo)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        self._nav_defs = [("projects", "📁", "nav_projects"), ("merger", "🎞", "nav_merger"),
-                          ("face_swap", "🎭", "nav_faceswap")]
+        self._nav_defs = [("projects", "📁", "nav_projects")]
         for key, icon, label_key in self._nav_defs:
             b = QPushButton(f"{icon} {tr(label_key)}")
             b.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
@@ -88,10 +85,7 @@ class MainWindow(QMainWindow):
         self.project_page = ProjectPage()
         self.episode_page = EpisodePage()
         self.clone_page = ClonePage()
-        self.merger_page = MergerToolPage()
-        self.face_page = FaceSwapPage()
-        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
-                  self.merger_page, self.face_page):
+        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page):
             self.stack.addWidget(p)
         root.addWidget(self.stack, 1)
 
@@ -114,14 +108,8 @@ class MainWindow(QMainWindow):
             self.nav_btns[key].setText(f"{icon} {tr(label_key)}")
 
     def _goto(self, key: str):
-        page = {"projects": self.projects_page,
-                "merger": self.merger_page,
-                "face_swap": self.face_page}.get(key, self.projects_page)
-        self.stack.setCurrentWidget(page)
-        if key == "projects":
-            self.projects_page.reload()
-        if key == "face_swap":
-            self.face_page.reload_models()
+        self.stack.setCurrentWidget(self.projects_page)
+        self.projects_page.reload()
 
     def _new_project(self):
         dlg = NewProjectDialog(self)

@@ -483,30 +483,18 @@ class EpisodePage(QWidget):
         self._reload_assets()
 
     def _face_swap(self, character_id: int):
-        cfg_id = self.face_model.currentData()
-        ok, msg = face_swap.health(config_id=cfg_id)
-        if not ok:
-            QMessageBox.warning(self, tr("face_swap"), f"换脸服务不可达:{msg}")
-            return
+        """资产·角色卡换脸:打开对话框(当前形象 → 选源脸 → 预览 → 应用替换)。"""
         c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
+        if not c:
+            return
         if not c["image_url"]:
-            QMessageBox.information(self, tr("face_swap"), "请先生成或上传角色形象图")
+            QMessageBox.information(self, tr("face_swap"), "该角色还没有形象图,请先「重绘」生成或「上传」")
             return
-        # 用项目内另一角色/或上传脸源:这里弹出选择脸源图片
-        p, _ = QFileDialog.getOpenFileName(self, tr("face_swap"), "", "Images (*.png *.jpg *.jpeg)")
-        if not p:
-            return
-        def job(tid):
-            target = config.media_url_to_path(c["image_url"])
-            out = face_swap.swap_one(target, p, config_id=cfg_id)
-            db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
-                  (config.path_to_media_url(out), db.now(), character_id))
-            return str(out)
-        def done(tid, result, err):
-            if err:
-                QMessageBox.warning(self, tr("face_swap"), str(err)[:400])
+        from .character_face_swap_dialog import CharacterFaceSwapDialog
+        dlg = CharacterFaceSwapDialog(self, dict(c), self.face_model.currentData(),
+                                      self.face_model.currentText())
+        if dlg.exec() == CharacterFaceSwapDialog.Accepted:
             self._reload_assets()
-        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     # ── 阶段④ 分镜 ──
     def _panel_storyboard(self, lay):

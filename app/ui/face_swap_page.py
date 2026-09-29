@@ -76,7 +76,7 @@ class FaceSwapPage(QWidget):
         recheck.clicked.connect(self._check_health)
         head.addWidget(recheck)
         root.addLayout(head)
-        root.addWidget(W.muted("本地 InsightFace 换脸:源脸照片 → 替换目标图中的人脸。可配置本地(127.0.0.1:5678)或远程服务:设置 → AI 服务 → 换脸。"))
+        root.addWidget(W.muted("通用图片换脸工具:源脸照片 → 替换目标图中的人脸(本地 127.0.0.1:5678 或远程,在右侧下拉选择)。角色形象换脸请到「项目 → 进入制作 → 视漫制作」的角色卡片。"))
 
         bar = QHBoxLayout()
         add_btn = QPushButton("🖼 " + tr("import_files") + "(目标图)")
@@ -96,17 +96,6 @@ class FaceSwapPage(QWidget):
         bar.addWidget(go)
         root.addLayout(bar)
 
-        apply_bar = QHBoxLayout()
-        apply_bar.addWidget(QLabel(tr("chars") + ":"))
-        self.char_combo = QComboBox()
-        self.char_combo.setMinimumWidth(220)
-        apply_bar.addWidget(self.char_combo)
-        apply_btn = QPushButton("⬇ 存为角色形象")
-        apply_btn.clicked.connect(self._apply_to_character)
-        apply_bar.addWidget(apply_btn)
-        apply_bar.addStretch(1)
-        root.addLayout(apply_bar)
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
@@ -123,10 +112,6 @@ class FaceSwapPage(QWidget):
         cfg_id = self.model_combo.currentData()
         ok, msg = face_swap.health(config_id=cfg_id)
         self.health_lab.setText(("✅ " if ok else "❌ ") + msg)
-        # 角色下拉
-        self.char_combo.clear()
-        for r in db.q("SELECT id,name FROM characters ORDER BY drama_id, id"):
-            self.char_combo.addItem(r["name"], r["id"])
 
     def reload_models(self):
         self.model_combo.blockSignals(True)
@@ -183,17 +168,3 @@ class FaceSwapPage(QWidget):
             for card, out in (result or []):
                 card.set_result(out)
         TASKMGR.submit("face_swap", job, done)
-
-    def _apply_to_character(self):
-        cid = self.char_combo.currentData()
-        if not cid:
-            return
-        with_result = [c for c in self.targets if c.result_path]
-        if not with_result:
-            QMessageBox.information(self, tr("face_swap"), "没有换脸结果可应用")
-            return
-        from ..core import db as _db
-        _db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
-               (config.path_to_media_url(with_result[0].result_path), _db.now(), cid))
-        QMessageBox.information(self, tr("face_swap"),
-                                f"已应用到「{self.char_combo.currentText()}」(共 {len(with_result)} 张结果,取第一张)")
