@@ -170,3 +170,9 @@
 8. **默认视频模型优先级(原版 e653b75+b78f9bf)**:易好快捷配置改为 MiniMax 98 > Wan 3.0 97 > Seedance 96 > RunningHub 95(Seedance 垫底);内容语言选择器由 4 语言下拉改为 **15 语种 5 列网格**(对齐原版 lang-picker-grid)。
 - DB 迁移:storyboards +title/location/time/result/atmosphere/sound_effect/description/subtitle_url/setting_tags/reference_images/deleted_at;dramas +creative_description/skip_creative/total_episodes;ai_service_configs +settings。
 - 截图 48~51。
+
+## 2026-09-29(第 13 轮:同步原版 73b3339)
+- **「章节名」按钮搬到项目页剧集卡**(原版 73b3339):从工作台原始内容工具栏移除,改到项目页剧集卡标题下方——缺章节名(标题为空或仅「第N集」占位)且有正文时显示虚线胶囊「✎ 章节名」,已有名字的集不显示;点击后原地写回并 toast 提示,卡片自动刷新(按钮消失)。
+- **正文标题行反向提取**(不调模型):新增 `extract_title_from_content()` 支持两种写法——markdown 标题 `# 归乡的井` 与 `第1集 县医院的消毒水味`;清洗书名号/引号/尾部标点;超过 30 字视为正文不当作标题(实测:两种写法均正确提取,超长行与普通正文行均返回空)。
+- `gen_chapter_title()` 改为**优先反向提取**(返回 source='content',省一次模型调用),提取不到才走 AI(返回 source='ai');仅在标题为占位时才提取,避免覆盖用户已改好的名字;UI 按来源给出「已提取章节名:」/「章节名已写入:」两种提示。
+- 截图 52(剧集卡章节名按钮:EP01 已有名字不显示 / EP99 缺名显示)。

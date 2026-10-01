@@ -189,18 +189,49 @@ def _apply_chapter_title(ep, name: str) -> str:
     return name
 
 
-def gen_chapter_title(episode_id: int, config_id: int | None = None) -> str:
-    """一键 AI 起章节名(对齐原版 POST /novel/chapter-title)。
+def extract_title_from_content(content: str) -> str:
+    """从正文首行反向提取已存在的章节名(不调 AI,对齐原版 73b3339)。
 
-    上下文:总纲节选 400 字 + 前三章摘要(各 200 字) + 本章正文节选 2000 字,
-    要求输出简短、有钩子、不超过 12 汉字、不带「第N集」前缀的纯文本章节名。
+    支持两种写法:`# 归乡的井`(markdown 标题)与 `第1集 县医院的消毒水味`;
+    清洗书名号/引号/尾部标点;超过 30 字视为正文不当作标题。提取不到返回空串。
     """
+    import re as _re
+    first = next((l.strip() for l in (content or "").splitlines() if l.strip()), "")
+    if not first:
+        return ""
+    if _re.match(r"^#{1,3}\s+", first):
+        name = _re.sub(r"^#{1,3}\s+", "", first)
+    elif _re.match(r"^第\d+集", first):
+        name = _re.sub(r"^第\d+集\s*[:：、.\-—]?\s*", "", first)
+    else:
+        return ""
+    name = _re.sub(r"^[#《「『\"'\s]+|[》」』\"'\s]+$", "", name)
+    name = _re.sub(r"[。！？!?，,、；;]+$", "", name).strip()
+    return name if name and len(name) <= 30 else ""
+
+
+def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[str, str]:
+    """一键章节名(对齐原版 POST /novel/chapter-title)。
+
+    优先反向提取:正文首行已有 `# 名字` / 「第N集 名字」时直接取用,不调模型;
+    提取不到才走 AI(上下文=总纲 400 字 + 前三章摘要各 200 字 + 本章节选 2000 字)。
+    返回 (章节名, 来源 'content' | 'ai')。
+    """
+    import re as _re
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集不存在")
     text = ep["content"] or ""
     if len(text.strip()) < 50:
         raise RuntimeError("本集正文太短,先粘贴或生成原文再起章节名")
+    # 仅在标题为占位时提取,避免覆盖用户已改好的名字
+    existing = (ep["title"] or "").strip()
+    if (not existing) or _re.match(r"^第\d+集\s*$", existing):
+        extracted = extract_title_from_content(text)
+        if extracted:
+            db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?",
+                  (f"第{ep['episode_number']}集 {extracted}", db.now(), episode_id))
+            return extracted, "content"
     d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     parts: list[str] = []
     if d["novel_outline"]:
@@ -220,4 +251,5 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None) -> str:
     name = _clean_chapter_name(raw)
     if not name:
         raise RuntimeError("AI 未返回有效章节名,请重试")
-    return _apply_chapter_title(ep, name)
+    _apply_chapter_title(ep, name)
+    return name, "ai"

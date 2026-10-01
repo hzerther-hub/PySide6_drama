@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes,提交+轮询+下载。"""
+"""视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes / runninghub / xiaoyunque(小云雀),提交+轮询+下载。"""
 from __future__ import annotations
 
 import re
@@ -19,6 +19,7 @@ RESOLUTION_TIERS: dict[str, list[str]] = {
     "minimax": ["768P", "2K"],
     "aliyun": ["480P", "720P", "1080P"],
     "agnes": ["720P", "1080P"],
+    "xiaoyunque": ["480p", "720p", "1080p"],
 }
 
 
@@ -166,6 +167,11 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
         return _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
                                     first_frame, refs, config_id)
 
+    if provider == "xiaoyunque":
+        # 小云雀要原始本地路径(上传换 asset_id),不能传 data URL,故传 reference_images 原列表
+        return _generate_xiaoyunque(cfg, base, headers, prompt, resolution, duration,
+                                    first_frame, reference_images or [])
+
     raise AIError(f"不支持的视频 provider: {provider}")
 
 
@@ -285,6 +291,139 @@ def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
     return _download(url, headers), "runninghub"
 
 
+# ── 小云雀(剪映 xyq.jianying.com):沉浸式短片 API,计费走小云雀积分(会员折扣价)──
+# 文档:https://bytedance.larkoffice.com/docx/CQOYdJNLioLz6fxRzKXcCsKLnJh
+XIAOYUNQUE_AGENT = "pippit_video_part_agent"  # 文档要求 agent_name 固定传此值
+
+
+def xiaoyunque_credit_balance(cfg: dict) -> str:
+    """查询小云雀积分余额(api_key 即官网【CLI/API】申请的 Access Key)。失败抛 AIError。"""
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    try:
+        resp = requests.post(f"{cfg['base_url'].rstrip('/')}/api/biz/v1/skill/get_credit_balance",
+                             json={}, headers=headers, timeout=30)
+    except requests.RequestException as e:
+        raise AIError(f"小云雀积分查询失败: {e}") from e
+    if resp.status_code != 200:
+        raise AIError(f"小云雀积分查询失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    r = resp.json()
+    if str(r.get("ret")) != "0":
+        raise AIError(f"小云雀积分查询失败: {r.get('errmsg') or str(r)[:200]}")
+    return str((r.get("data") or {}).get("total_remain_amount") or "0")
+
+
+def _xy_resolve_path(path: str | Path) -> Path | None:
+    """首帧/参考图可能存的是 /static/ 媒体地址,统一转本地路径;不存在返回 None。"""
+    s = str(path).replace("\\", "/")
+    p = config.media_url_to_path(s) if s.startswith(("/static/", "static/")) else Path(path)
+    return p if p.exists() else None
+
+
+def _xy_upload_asset(base: str, headers: dict, path: str | Path) -> str:
+    """上传单个素材换 pippit_asset_id(multipart 单文件,认证在请求头)。"""
+    p = _xy_resolve_path(path)
+    if not p:
+        raise AIError(f"小云雀参考素材不存在: {path}")
+    up = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+    with open(p, "rb") as f:
+        resp = requests.post(f"{base}/api/biz/v1/skill/upload_file", headers=up,
+                             files={"file": (p.name, f)}, timeout=120)
+    if resp.status_code not in (200, 201):
+        raise AIError(f"小云雀上传失败 HTTP {resp.status_code}: {resp.text[:300]}")
+    r = resp.json()
+    if str(r.get("ret")) != "0":
+        raise AIError(f"小云雀上传失败: {r.get('errmsg') or str(r)[:200]}")
+    asset_id = (r.get("data") or {}).get("pippit_asset_id")
+    if not asset_id:
+        raise AIError(f"小云雀上传响应缺少 pippit_asset_id: {str(r)[:300]}")
+    return asset_id
+
+
+def _xy_norm_duration(d) -> int:
+    try:
+        n = int(float(d))
+    except (TypeError, ValueError):
+        n = 8
+    return min(30, max(2, n))
+
+
+def _generate_xiaoyunque(cfg, base, headers, prompt, resolution, duration,
+                         first_frame, ref_images):
+    """沉浸式短片 API(submit_run):自然语言指令 + 精确时长/分辨率,适配短剧镜头。"""
+    import json as _json
+    model = (cfg.get("model") or "").strip()
+    if not model:
+        raise AIError("小云雀需要在配置中选择模型(如 Seedance_2.5)")
+    res = (resolution or "720p").strip().lower()
+    if res not in ("480p", "720p", "1080p"):
+        res = "720p"
+    if res == "1080p" and model.lower() != "seedance2.0_vision":
+        raise AIError("小云雀 1080p 目前仅支持 seedance2.0_vision 模型,请调整分辨率或模型")
+    # 积分预检:0 余额直接报错;查询失败不阻塞(服务端提交时也会校验)
+    try:
+        balance = xiaoyunque_credit_balance(cfg)
+    except AIError:
+        balance = None
+    if balance == "0":
+        raise AIError("小云雀积分余额为 0,请到官网充值或领取每日积分后再生成")
+    # 画幅可由配置 settings JSON 覆盖(如 {"ratio": "9:16"} 竖屏)
+    ratio = "16:9"
+    try:
+        s = _json.loads(cfg.get("settings") or "")
+        if isinstance(s, dict) and s.get("ratio"):
+            ratio = str(s["ratio"])
+    except Exception:  # noqa: BLE001
+        pass
+    # 首帧图排首位(锁角色),参考图随后;统一上传换 asset_id(接口无 data URL 通道)
+    imgs = ([first_frame] if first_frame else []) + list(ref_images)
+    asset_ids = [_xy_upload_asset(base, headers, p) for p in imgs[:4]]
+    body: dict = {
+        "message": prompt,
+        "agent_name": XIAOYUNQUE_AGENT,
+        "video_part_tool_param": {
+            "prompt": prompt, "model": model, "ratio": ratio,
+            "duration_sec": _xy_norm_duration(duration), "resolution": res,
+            "images": [{"pippit_asset_id": a} for a in asset_ids]},
+    }
+    if asset_ids:
+        body["asset_ids"] = asset_ids
+    resp = requests.post(f"{base}/api/biz/v1/skill/submit_run", json=body, headers=headers, timeout=120)
+    if resp.status_code not in (200, 201):
+        raise AIError(f"小云雀提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+    r = resp.json()
+    if str(r.get("ret")) != "0":
+        raise AIError(f"小云雀提交失败: {r.get('errmsg') or str(r)[:200]}")
+    run = (r.get("data") or {}).get("run") or {}
+    run_id, thread_id = run.get("run_id"), run.get("thread_id")
+    if not run_id or not thread_id:
+        raise AIError(f"小云雀提交响应缺少 run_id/thread_id: {str(r)[:300]}")
+
+    def check():
+        st = requests.post(f"{base}/api/biz/v1/agent/query_generate_video_result",
+                           json={"thread_id": thread_id, "run_id": run_id},
+                           headers=headers, timeout=30).json()
+        if str(st.get("ret")) != "0":
+            return "failed", None, str(st.get("errmsg") or st)[:200]
+        data = st.get("data") or {}
+        state = str(data.get("run_state") or (data.get("run") or {}).get("state") or "")
+        urls = data.get("video_urls") or []
+        if state == "3":
+            if urls:
+                return "running", urls[0], None
+            return "failed", None, "任务成功但未返回视频链接"
+        if state in ("4", "5"):
+            fr = data.get("fail_reason")
+            msg = fr.get("message") if isinstance(fr, dict) else fr
+            return "failed", None, str(msg or "任务失败")[:200]
+        return "running", None, None
+
+    url = _poll(check, 10, 300)
+    # video_urls 是服务端解析好的可直接下载链接,不带鉴权头下载,避免泄露 Access Key
+    return _download(url), "xiaoyunque"
+
+
 def test_config(cfg: dict) -> tuple[bool, str]:
     # 视频不做真实生成测试,只做提交连通性(避免消耗配额):用极短 prompt 提交后立即查询一次
     try:
@@ -298,6 +437,9 @@ def test_config(cfg: dict) -> tuple[bool, str]:
                 headers=headers, timeout=30)
             ok = resp.status_code in (200, 201)
             return ok, "OK" if ok else f"HTTP {resp.status_code}: {resp.text[:200]}"
+        if cfg["provider"] == "xiaoyunque":
+            # 积分余额接口免费,正好用作真实连通性测试
+            return True, f"OK,积分余额 {xiaoyunque_credit_balance(cfg)}"
         return True, "OK(跳过真实提交)"
     except Exception as e:  # noqa: BLE001
         return False, str(e)[:300]

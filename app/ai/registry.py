@@ -49,6 +49,9 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "RunningHub · Seedance 2.5 / Wan 3.0", "provider": "runninghub",
          "base_url": "https://www.runninghub.cn",
          "models": ["seedance-2.5", "wan3.0-video", "wan3.0-video-prime"]},
+        {"name": "小云雀(剪映) Seedance / 多模型", "provider": "xiaoyunque",
+         "base_url": "https://xyq.jianying.com",
+         "models": ["Seedance_2.5", "seedance2.0_fast_vision", "seedance2.0_vision", "Seedance_2.0_mini"]},
     ],
     "tts": [
         {"name": "豆包语音(火山引擎)", "provider": "volcengine",
@@ -70,6 +73,9 @@ MODEL_CHOICES: dict[str, list[str]] = {
     "agnes": ["agnes-image-2.5-flash", "agnes-image-2.5", "agnes-image-2.1-flash", "agnes-video-2.5-flash", "agnes-video-2.5"],
     "volcengine": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini", "doubao-seedream-4-0"],
     "aliyun": ["wan3.0-video", "wan3.0-video-prime"],
+    # 小云雀沉浸式短片 API 的 model 枚举(文档 v1.0.6;非 VIP 账号仅 mini_lite 可用)
+    "xiaoyunque": ["Seedance_2.5", "seedance2.0_fast_vision", "seedance2.0_vision", "Seedance_2.0_mini",
+                   "MiniMax-H3", "MiniMax-H3-Max", "wan3.0", "happyhorse-1.1", "Seedance_2.0_mini_lite"],
 }
 
 

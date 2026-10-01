@@ -92,7 +92,7 @@ curl -X POST 'https://xyq.jianying.com/api/biz/v1/agent/submit_marketing_run' \
 
 ### 3. 生成沉浸式短片（短剧向）
 
-端点：`POST https://xyq.jianying.com/api/biz/v1/agent/submit_run`（文档正文以 `submit_run` 指代，与 submit_marketing_run 同前缀）
+端点：`POST https://xyq.jianying.com/api/biz/v1/skill/submit_run`（curl 示例原文；查询仍走 agent 前缀的 query_generate_video_result）
 
 请求体：
 

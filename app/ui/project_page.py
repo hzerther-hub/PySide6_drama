@@ -22,8 +22,16 @@ STATUS_META = {
 }
 
 
+def _chapter_name_missing(ep: dict) -> bool:
+    """标题为空或只有「第N集」占位 = 缺章节名(对齐原版 chapterNameMissing)。"""
+    import re
+    t = (ep.get("title") or "").strip()
+    return (not t) or bool(re.match(r"^第\d+集\s*$", t))
+
+
 class EpisodeCard(QFrame):
     enter = Signal(int)
+    _reload_needed = Signal()
 
     def __init__(self, ep: dict):
         super().__init__()
@@ -50,6 +58,7 @@ class EpisodeCard(QFrame):
         self.title_edit.editingFinished.connect(self._rename)
         self.title_edit.returnPressed.connect(self._rename)
         top.addWidget(self.title_edit, 1)
+        self.title_done: list = []  # 防止重复挂载
         # 状态菜单
         self.status_btn = QPushButton()
         self.status_btn.setFixedWidth(64)
@@ -58,6 +67,18 @@ class EpisodeCard(QFrame):
         self.status_btn.clicked.connect(self._status_menu)
         top.addWidget(self.status_btn)
         lay.addLayout(top)
+        # 缺章节名且有正文时,标题下方显示「章节名」按钮(对齐原版 73b3339)
+        if _chapter_name_missing(dict(ep)) and (ep.get("content") or "").strip():
+            name_row = QHBoxLayout()
+            self.name_btn = QPushButton("✎ 章节名")
+            self.name_btn.setToolTip("正文已有标题行就直接取,否则 AI 参考前文摘要与总纲自动起名")
+            self.name_btn.setStyleSheet(
+                "QPushButton{border:1px dashed #4b6ef5;color:#4b6ef5;border-radius:10px;"
+                "padding:2px 10px;font-size:11px;background:transparent;}")
+            self.name_btn.clicked.connect(lambda: self._gen_chapter_title(ep["id"]))
+            name_row.addWidget(self.name_btn)
+            name_row.addStretch(1)
+            lay.addLayout(name_row)
         mid = QHBoxLayout()
         chips = QHBoxLayout()
         chips.setSpacing(6)
@@ -89,6 +110,21 @@ class EpisodeCard(QFrame):
         enter.clicked.connect(lambda: self.enter.emit(self.episode_id))
         mid.addWidget(enter)
         lay.addLayout(mid)
+
+    def _gen_chapter_title(self, episode_id: int):
+        """一键章节名:优先从正文首行提取,提取不到才调 AI。"""
+        from ..core.taskmgr import TASKMGR
+        def job(tid):
+            from ..pipeline import novel as novel_pipe
+            return novel_pipe.gen_chapter_title(episode_id)
+        def done(tid, result, err_):
+            if err_:
+                err(err_)
+                return
+            name, src = result
+            ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))
+            self._reload_needed.emit()
+        TASKMGR.submit("novel_title", job, done, episode_id=episode_id)
 
     def _rename(self):
         from PySide6.QtWidgets import QApplication
@@ -459,6 +495,7 @@ class ProjectPage(QWidget):
         for ep in rows:
             card = EpisodeCard(dict(ep))
             card.enter.connect(self._on_enter)
+            card._reload_needed.connect(self.reload)
             self.ep_lay.addWidget(card)
         if self.can_add_episode():
             add = QPushButton("＋ " + tr("add_episode"))

@@ -323,11 +323,7 @@ class EpisodePage(QWidget):
         self.edit_instr.setPlaceholderText("按指令改稿:如「把开头改得更抓人」「加强母亲戏份」")
         edit_btn = QPushButton("✏ 改稿")
         edit_btn.clicked.connect(self._edit_chapter)
-        self.title_btn = QPushButton("✎ 章节名")
-        self.title_btn.setToolTip("本集还没有章节名:AI 会参考前文摘要与总纲,根据正文自动起名并写回标题与正文首行")
-        self.title_btn.clicked.connect(self._gen_chapter_title)
         bar2.addWidget(plan_btn)
-        bar2.addWidget(self.title_btn)
         bar2.addWidget(review_btn)
         bar2.addWidget(self.edit_instr, 1)
         bar2.addWidget(edit_btn)
@@ -338,8 +334,6 @@ class EpisodePage(QWidget):
         ep = self._ep
         self.raw_edit.setPlainText(ep["content"] or "")
         self.words_spin.setValue(ep["target_words"] or 0)
-        if hasattr(self, "title_btn"):
-            self.title_btn.setVisible(self._chapter_name_missing() and bool(ep["content"]))
         self.style_edit.setText(db.get_setting("novel_style", "爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置"))
 
 
