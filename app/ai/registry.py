@@ -46,6 +46,9 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
          "models": ["MiniMax-H3"]},
         {"name": "阿里云百炼 Wan", "provider": "aliyun", "base_url": "https://dashscope.aliyuncs.com",
          "models": ["wan3.0-video", "wan3.0-video-prime"]},
+        {"name": "RunningHub · Seedance 2.5 / Wan 3.0", "provider": "runninghub",
+         "base_url": "https://www.runninghub.cn",
+         "models": ["seedance-2.5", "wan3.0-video", "wan3.0-video-prime"]},
     ],
     "tts": [
         {"name": "豆包语音(火山引擎)", "provider": "volcengine",
@@ -137,20 +140,29 @@ def default_config(service_type: str, config_id: int | None = None) -> dict | No
 
 
 def apply_yihao_key(api_key: str) -> list[str]:
-    """易好快捷配置:一个 Key 写入文本/图片/视频三条推荐配置(对齐原版)。"""
+    """易好快捷配置:一个 Key 写入文本/图片/视频推荐配置。
+
+    视频优先级对齐原版(e653b75 + b78f9bf):MiniMax 98 > Wan 3.0 97 > Seedance 96 > RunningHub 95,
+    Seedance 垫底(工作台按 priority 降序取第一个启用配置)。
+    """
     created: list[str] = []
     presets = [
-        ("text", "minimax", "https://api.minimaxi.com/v1", "MiniMax-M3"),
-        ("image", "agnes", "https://apihub.agnes-ai.com", "agnes-image-2.5-flash"),
-        ("video", "agnes", "https://apihub.agnes-ai.com", "agnes-video-2.5-flash"),
+        ("text", "minimax", "https://api.minimaxi.com/v1", "MiniMax-M3", 100),
+        ("image", "agnes", "https://apihub.agnes-ai.com", "agnes-image-2.5-flash", 100),
+        ("video", "minimax", "https://api.minimaxi.com/v1", "MiniMax-H3", 98),
+        ("video", "aliyun", "https://dashscope.aliyuncs.com", "wan3.0-video", 97),
+        ("video", "volcengine", "https://ark.cn-beijing.volces.com/api/v3",
+         "doubao-seedance-2-0-mini-260615", 96),
+        ("video", "runninghub", "https://www.runninghub.cn", "seedance-2.5", 95),
     ]
-    for st, provider, url, model in presets:
+    for st, provider, url, model, prio in presets:
         row = db.q1("SELECT id FROM ai_service_configs WHERE service_type=? AND provider=?", (st, provider))
         if row:
-            update_config(row["id"], api_key=api_key, model=model, base_url=url)
+            update_config(row["id"], api_key=api_key, model=model, base_url=url, priority=prio)
         else:
-            add_config(st, provider, url, model, api_key=api_key, is_default=True)
-        created.append(f"{st}:{provider}/{model}")
+            add_config(st, provider, url, model, api_key=api_key, priority=prio,
+                       is_default=(st != "video"))
+        created.append(f"{st}:{provider}/{model}(P{prio})")
     return created
 
 

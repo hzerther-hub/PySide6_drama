@@ -61,6 +61,7 @@ DDL: list[str] = [
       novel_outline TEXT, novel_world TEXT, novel_contract TEXT,
       novel_plan TEXT, novel_volume TEXT, novel_chapters TEXT, novel_meta TEXT,
       ethnicity TEXT DEFAULT 'auto',
+      creative_description TEXT, skip_creative INTEGER DEFAULT 0, total_episodes INTEGER,
       metadata TEXT,
       thumbnail TEXT, status TEXT DEFAULT 'pending',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
@@ -121,6 +122,9 @@ DDL: list[str] = [
       image_prompt TEXT, video_prompt TEXT, bgm_prompt TEXT,
       narration TEXT, narration_audio_url TEXT, narration_voice TEXT, narration_duration REAL,
       composed_image TEXT, first_frame_image TEXT, last_frame_image TEXT,
+      reference_images TEXT, title TEXT, location TEXT, time TEXT, result TEXT,
+      atmosphere TEXT, sound_effect TEXT, description TEXT, subtitle_url TEXT,
+      setting_tags TEXT, deleted_at TEXT,
       video_url TEXT, composed_video_url TEXT, duration REAL,
       status TEXT DEFAULT 'pending', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS storyboard_characters (storyboard_id INTEGER NOT NULL, character_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, character_id))""",
@@ -329,7 +333,22 @@ def init_db() -> None:
         db.execute(stmt)
     # 增量加列(幂等,对齐原版 sqlite-schema.ts 老库迁移做法)
     for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
-                "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL"):
+                "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL",
+                "ALTER TABLE ai_service_configs ADD COLUMN settings TEXT",
+                "ALTER TABLE dramas ADD COLUMN creative_description TEXT",
+                "ALTER TABLE dramas ADD COLUMN skip_creative INTEGER DEFAULT 0",
+                "ALTER TABLE dramas ADD COLUMN total_episodes INTEGER",
+                "ALTER TABLE storyboards ADD COLUMN reference_images TEXT",
+                "ALTER TABLE storyboards ADD COLUMN title TEXT",
+                "ALTER TABLE storyboards ADD COLUMN location TEXT",
+                "ALTER TABLE storyboards ADD COLUMN time TEXT",
+                "ALTER TABLE storyboards ADD COLUMN result TEXT",
+                "ALTER TABLE storyboards ADD COLUMN atmosphere TEXT",
+                "ALTER TABLE storyboards ADD COLUMN sound_effect TEXT",
+                "ALTER TABLE storyboards ADD COLUMN description TEXT",
+                "ALTER TABLE storyboards ADD COLUMN subtitle_url TEXT",
+                "ALTER TABLE storyboards ADD COLUMN setting_tags TEXT",
+                "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT"):
         try:
             db.execute(col)
         except Exception:  # noqa: BLE001

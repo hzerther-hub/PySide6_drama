@@ -1,0 +1,112 @@
+# -*- coding: utf-8 -*-
+"""分镜参考图引用:单一真相源(对齐原版 buildShotReferenceList,修复序号错位 bug)。
+
+原版修复要点(67adf7a):
+  原实现 `reference_image_urls` 顺序是「角色→场景」,而 `@名字 → @图片N` 索引却是
+  「场景→角色」,两边反了 → 分镜同时绑定场景与角色时提示词里的 `@图片N` 指错图。
+  现以 build_shot_reference_list() 为唯一真相源,参考图列表与序号映射都由它派生,
+  保证 `@图片N` 永远等于 reference_image_urls[N-1]。
+
+权威顺序:角色(按绑定顺序) → 场景(单选) → 道具(按绑定顺序)
+去重:按 imageUrl 去重;截断:达到 ref_image_limit 即停(Wan 3.0 为 10 张,其他 9 张)。
+"""
+from __future__ import annotations
+
+import re
+
+from ..core import config, db
+
+
+def ref_image_limit(provider: str | None = None, model: str | None = None) -> int:
+    """Wan 3.0 官方支持 10 张参考图,其他模型 9 张(对齐原版 useModelOptions.refImageLimit)。"""
+    if provider == "aliyun" or (model or "").startswith("wan3.0-video"):
+        return 10
+    return 9
+
+
+def _variant_image_of(character_id: int, sb: dict) -> str | None:
+    """角色造型图:优先取该分镜人工覆盖的变体,否则按场景标签自动匹配,最后回退基础形象。"""
+    row = db.q1("""SELECT variant_id FROM storyboard_characters
+                  WHERE storyboard_id=? AND character_id=?""", (sb["id"], character_id))
+    if row and row["variant_id"]:
+        v = db.q1("SELECT image_url FROM character_variants WHERE id=?", (row["variant_id"],))
+        if v and v["image_url"]:
+            return v["image_url"]
+    # 按 setting_tags 自动解析造型变体
+    tags = set(db.jload(sb.get("setting_tags"), []) or [])
+    if tags:
+        c = db.q1("SELECT id FROM characters WHERE id=?", (character_id,))
+        if c:
+            for v in db.q("SELECT * FROM character_variants WHERE character_id=?", (character_id,)):
+                vtags = set(db.jload(v["tags"], []) or [])
+                if tags & vtags and v["image_url"]:
+                    return v["image_url"]
+    base = db.q1("SELECT image_url FROM characters WHERE id=?", (character_id,))
+    return base["image_url"] if base else None
+
+
+def build_shot_reference_list(sb: dict, limit: int | None = None) -> list[dict]:
+    """构造该分镜的参考图权威列表:[{name, image_url}]。角色优先(缺 first_frame 时会用 [0] 兜底锁脸)。"""
+    limit = limit or 9
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def push(name: str | None, url: str | None):
+        if not url or url in seen or len(out) >= limit:
+            return
+        seen.add(url)
+        out.append({"name": name or "", "image_url": url})
+
+    # 1) 角色(排首位:后端缺 first_frame 时会用 reference_image_urls[0] 兜底当首帧,锁的是角色脸)
+    for r in db.q("""SELECT character_id FROM storyboard_characters WHERE storyboard_id=?
+                    ORDER BY character_id""", (sb["id"],)):
+        cid = r["character_id"]
+        c = db.q1("SELECT name FROM characters WHERE id=?", (cid,))
+        push(c["name"] if c else None, _variant_image_of(cid, sb))
+    # 2) 场景(单选)
+    if sb.get("scene_id"):
+        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (sb["scene_id"],))
+        if s:
+            push(s["name"], s["image_url"])
+    # 3) 道具
+    for r in db.q("""SELECT prop_id FROM storyboard_props WHERE storyboard_id=?
+                    ORDER BY prop_id""", (sb["id"],)):
+        pr = db.q1("SELECT name, image_url FROM props WHERE id=?", (r["prop_id"],))
+        if pr:
+            push(pr["name"], pr["image_url"])
+    return out
+
+
+def get_shot_reference_images(sb: dict, limit: int | None = None) -> list[str]:
+    return [i["image_url"] for i in build_shot_reference_list(sb, limit)]
+
+
+def get_shot_reference_index_map(sb: dict, limit: int | None = None) -> dict[str, int]:
+    """name -> 序号(1 起),同名取首次出现者。"""
+    mapping: dict[str, int] = {}
+    for i, item in enumerate(build_shot_reference_list(sb, limit), start=1):
+        if item["name"] and item["name"] not in mapping:
+            mapping[item["name"]] = i
+    return mapping
+
+
+def resolve_video_prompt_refs(prompt: str, sb: dict, limit: int | None = None) -> str:
+    """把提示词里的 `@名字` 替换为 `@图片N名字`(对齐原版 resolveVideoPromptRefs)。
+
+    名字按长度降序匹配,避免「王小明」被「王小」抢先命中。
+    """
+    if not prompt:
+        return prompt or ""
+    mapping = get_shot_reference_index_map(sb, limit)
+    if not mapping:
+        return prompt
+    names = sorted(mapping.keys(), key=len, reverse=True)
+
+    def repl(m):
+        raw = m.group(1)
+        for name in names:
+            if raw.startswith(name):
+                return f"@图片{mapping[name]}{name}{raw[len(name):]}"
+        return m.group(0)
+
+    return re.sub(r"@([^\s@]+)", repl, prompt)

@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from ..core import config, db
 from ..core.i18n import tr
@@ -61,6 +61,28 @@ class ProjectSettingsDialog(QDialog):
         i = self.ethnicity.findData(d["ethnicity"])
         self.ethnicity.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("ethnicity"), self.ethnicity)
+
+        # ── 新增:创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
+        has_first_ep = bool(db.q1("SELECT id FROM episodes WHERE drama_id=? LIMIT 1", (drama_id,)))
+        self.skip_creative = QCheckBox("不需要创意描述 — 我会自己粘贴文章")
+        self.skip_creative.setChecked(bool(d["skip_creative"]))
+        self.skip_creative.setDisabled(has_first_ep)
+        f.addRow("", self.skip_creative)
+        self.creative = QPlainTextEdit(d["creative_description"] or "")
+        self.creative.setPlaceholderText("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣���、拿回母亲遗产……")
+        self.creative.setMaximumHeight(96)
+        self.creative.setDisabled(has_first_ep or bool(d["skip_creative"]))
+        f.addRow("创意描述", self.creative)
+        f.addRow("", W.muted(
+            "已有第 1 集,创意描述已锁定不可修改(如需调整,请新建项目)" if has_first_ep
+            else "项目级「故事是什么」的全文描述,AI 用它生成匹配的章节内容(小说/短剧/漫画 都用)"))
+        self.total_eps = QSpinBox()
+        self.total_eps.setRange(1, 999)
+        self.total_eps.setValue(int(d["total_episodes"] or 1))
+        f.addRow("集数", self.total_eps)
+        f.addRow("", W.muted("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
+        self.skip_creative.toggled.connect(
+            lambda on: self.creative.setDisabled(on or has_first_ep))
         root.addLayout(f)
         root.addStretch(1)
         row = QHBoxLayout()
@@ -78,10 +100,14 @@ class ProjectSettingsDialog(QDialog):
         meta = db.jload(d["metadata"], {}) if d else {}
         meta["intro"] = self.intro.text().strip()
         meta["genre"] = self.genre.text().strip()
-        db.ex("UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?, updated_at=? WHERE id=?",
+        db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
+               creative_description=?, skip_creative=?, total_episodes=?, updated_at=? WHERE id=?""",
               (self.title.text().strip() or "未命名", self.aspect.currentData(),
                self.style.currentData(), self.ethnicity.currentData(),
-               json.dumps(meta, ensure_ascii=False), db.now(), self.drama_id))
+               json.dumps(meta, ensure_ascii=False),
+               None if self.skip_creative.isChecked() else self.creative.toPlainText().strip(),
+               1 if self.skip_creative.isChecked() else 0,
+               self.total_eps.value(), db.now(), self.drama_id))
         self.accept()
 
 
@@ -135,6 +161,10 @@ class AssetDetailDialog(QDialog):
         self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, row.get("image_url"), row["name"]).exec()
         self.img.setToolTip("点击查看大图")
         left.addWidget(self.img)
+        dl = QPushButton("↓ 下载原图")
+        dl.setToolTip("下载原图到本地,文件名自动使用资产名")
+        dl.clicked.connect(self._download)
+        left.addWidget(dl)
         body.addLayout(left)
         # 右编辑
         right = QVBoxLayout()
@@ -308,6 +338,15 @@ class AssetDetailDialog(QDialog):
         self.img.setPixmap(W.pixmap_from_media(url, 276, 276))
         if self._on_changed:
             self._on_changed()
+
+    def _download(self):
+        from ..core import download as dl_mod
+        from .toast import err, ok
+        try:
+            p = dl_mod.download_asset_image(self.row, self.kind)
+            ok(f"已下载:{p.name}")
+        except Exception as e:  # noqa: BLE001
+            err(str(e))
 
     def _delete(self):
         if QMessageBox.question(self, tr("delete"), f"确定删除「{self.row['name']}」?") != QMessageBox.Yes:

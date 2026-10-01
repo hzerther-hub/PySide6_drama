@@ -2,6 +2,7 @@
 """视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes,提交+轮询+下载。"""
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from pathlib import Path
@@ -161,7 +162,127 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
         url = _poll(check4, 10, 300)
         return _download(url, headers), provider
 
+    if provider == "runninghub":
+        return _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
+                                    first_frame, refs, config_id)
+
     raise AIError(f"不支持的视频 provider: {provider}")
+
+
+# ── RunningHub(对齐原版 b78f9bf:openapi v2,Seedance 2.5 + Wan 3.0 参考生视频)──
+RUNNINGHUB_MODELS = {
+    "seedance-2.5": {"endpoint": "/bydedance/seedance-2.5-token/multimodal-video",
+                      "img": 30, "vid": 10, "aud": 10},
+    "wan3.0-video": {"endpoint": "/alibaba/wan-3.0/reference-to-video",
+                     "img": 10, "vid": 5, "aud": 5},
+    "wan3.0-video-prime": {"endpoint": "/alibaba/wan-3.0/reference-to-video",
+                           "img": 10, "vid": 5, "aud": 5},
+}
+
+
+def _rh_normalize_duration(d) -> int:
+    try:
+        n = int(float(d))
+    except (TypeError, ValueError):
+        n = 5
+    return min(30, max(2, n))
+
+
+def _rh_normalize_resolution(res: str, is_wan: bool) -> str:
+    r = (res or "").strip()
+    if r.upper() == "2K":
+        return "1080P" if is_wan else "2K"
+    if r.upper() in ("480P", "1080P"):
+        return r.upper()
+    return "720P"
+
+
+def _rh_find_video_url(node, depth: int = 0):
+    """递归找第一个 .mp4 URL;优先按字段名顺序,避免封面图抢先命中。"""
+    if depth > 8:
+        return None
+    if isinstance(node, str):
+        return node if re.match(r"^https?://\S+\.mp4(\?\S*)?$", node, re.I) else None
+    if isinstance(node, dict):
+        for key in ("video_url", "videoUrl", "video", "url", "result_url", "resultUrl"):
+            if key in node:
+                hit = _rh_find_video_url(node[key], depth + 1)
+                if hit:
+                    return hit
+        for v in node.values():
+            hit = _rh_find_video_url(v, depth + 1)
+            if hit:
+                return hit
+    elif isinstance(node, list):
+        for v in node:
+            hit = _rh_find_video_url(v, depth + 1)
+            if hit:
+                return hit
+    return None
+
+
+def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
+                         first_frame, refs, config_id):
+    import json as _json
+    model_key = (cfg["model"] or "").strip()
+    spec = RUNNINGHUB_MODELS.get(model_key)
+    if not spec:
+        raise AIError("RunningHub 视频仅支持 seedance-2.5 / wan3.0-video(-prime),当前: " + model_key)
+    is_wan = model_key.startswith("wan3")
+    imgs = list(refs)
+    if len(imgs) > spec["img"]:
+        raise AIError(f"RunningHub 参考素材超限:图片≤{spec['img']}")
+    # 首帧图 unshift 到首位,保持「第一张参考图锁脸」语义
+    if first_frame:
+        d_url = _local_to_data_url(first_frame)
+        if d_url not in imgs:
+            imgs.insert(0, d_url)
+    if not imgs and not prompt.strip():
+        raise AIError("RunningHub 生成需要至少一个参考图/视频或 prompt")
+    dur = _rh_normalize_duration(duration)
+    res = _rh_normalize_resolution(resolution, is_wan)
+    # 厂商私有开关:settings.realPersonMode 显式为 false 才关(默认 true)
+    settings = {}
+    try:
+        s = _json.loads(cfg.get("settings") or "")
+        if isinstance(s, dict):
+            settings = s
+    except Exception:  # noqa: BLE001
+        pass
+    body: dict = {"prompt": prompt.replace("@图片(\\d+)", r"图\1"),
+                  "imageUrls": imgs, "resolution": res, "duration": dur}
+    if is_wan:
+        body["aspectRatio"] = "自适应"
+        body["audio"] = True
+    else:
+        body["ratio"] = "自适应"
+        body["generateAudio"] = True
+        body["watermark"] = False
+        body["realPersonMode"] = settings.get("realPersonMode") is not False
+    submit = requests.post(f"{base}/openapi/v2{spec['endpoint']}", json=body,
+                           headers=headers, timeout=120)
+    if submit.status_code not in (200, 201):
+        raise AIError(f"RunningHub 提交失败 HTTP {submit.status_code}: {submit.text[:300]}")
+    r = submit.json()
+    task_id = (r.get("taskId") or r.get("task_id") or (r.get("data") or {}).get("taskId")
+               or (r.get("data") or {}).get("task_id") or r.get("id"))
+    if not task_id:
+        raise AIError(f"[RunningHub] {r.get('msg') or r.get('message') or '响应中缺少 taskId'}")
+
+    def check():
+        st = requests.post(f"{base}/openapi/v2/query", json={"taskId": task_id},
+                           headers=headers, timeout=30).json()
+        payload = st.get("data") or st
+        s = str(payload.get("status") or payload.get("state") or "").lower()
+        if s in ("success", "succeeded", "completed", "complete"):
+            return "running", _rh_find_video_url(payload), None
+        if s in ("failed", "failure", "error", "cancelled", "canceled"):
+            return "failed", None, (payload.get("msg") or payload.get("message")
+                                    or payload.get("failMsg") or payload.get("fail_msg"))
+        return "running", None, None
+
+    url = _poll(check, 10, 300)
+    return _download(url, headers), "runninghub"
 
 
 def test_config(cfg: dict) -> tuple[bool, str]:

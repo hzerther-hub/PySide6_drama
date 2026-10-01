@@ -154,3 +154,19 @@
 - 用 QRawFont.supportsCharacter 实测全项目符号:15 个彩色 emoji(📖🎬📚📣🎞📁🌓🌐🖼🔊🔎🎨🔄📋🗑)缺字形;几何/箭头符号(▶✏➕⚡✕●○⋯·—⏳✅❌↻)均正常。
 - 全项目 46 处 emoji 替换为可靠 Unicode 符号(§▷▤◈▦◐◎▣♪◇◑↻✕),删除按钮改为红色文字「删除」双保险。
 - 截图 45~47(启动台/剧集列表/工作台)。
+
+## 2026-09-29(第 12 轮:同步原版 xiaoshuo 新增功能,8 项 100% 复刻)
+> 依据 `git diff dc86ba8..HEAD`(原版 2026-09-29 ~ 10-01 共 20+ 提交)逐项复刻。
+### P0
+1. **参考图序号统一(正确性 bug 修复,原版 67adf7a)**:新增 `pipeline/refs.py` 作为单一真相源 `build_shot_reference_list()`——权威顺序 **角色→场景→道具**(角色排首位:后端缺 first_frame 时会用 [0] 兜底锁脸),按 imageUrl 去重,截断上限 Wan 3.0 为 10 张 / 其他 9 张。`get_shot_reference_images()` 与 `get_shot_reference_index_map()` 均由它派生,保证 `@图片N ≡ reference_image_urls[N-1]`;`resolve_video_prompt_refs()` 把 `@名字` 替换为 `@图片N名字`(名字按长度降序匹配避免前缀误命中)。`shot_tools.collect_reference_images` 由「正则猜 @名字」改为按 storyboard_id 走该真源。
+2. **项目设置新增字段(原版 72736af)**:创意描述 textarea + 「不需要创意描述」复选框 + 集数(1-999);已有第 1 集时创意描述与复选框**锁定**;集数=1 或已达总数时「添加一集」按钮隐藏并提示。
+3. **小说章节自动起名(原版 a41c224 + 8f3213d)**:`gen_chapter_title()`——上下文=总纲 400 字 + 前三章摘要(各 200 字)+ 本章节选 2000 字,输出清洗三级(取首行→去「第N集」前缀→去引号/井号→截断 20 字),写回 `episodes.title` 与正文首行 `# <name>`;写章路径 `_save_with_title()` 自动识别首行章节名并写回;UI 在缺章节名时显示「✎ 章节名」按钮。
+### P1
+4. **资产下载(原版 72736af)**:新增 `core/download.py`,文件名规则对齐原版(资产名[_变体].png / 第NN镜[_标题].mp4 / <项目名>_第N集.mp4),非法字符清洗、扩展名推断、400MB 上限、重名自动加序号;UI 接入素材详情弹窗「↓ 下载原图」、分镜行「↓」、导出页成片「下载」。
+5. **RunningHub 视频适配器(原版 b78f9bf)**:openapi v2 协议,模型 `seedance-2.5`(realPersonMode 默认 true,显式 false 才关)/ `wan3.0-video(-prime)`;首帧图 unshift 首位保锁脸;归一化(duration 2-30、resolution 2K→wan 收敛 1080P、adaptive→自适应);`@图片N`→`图N` 提示词转换;容忍性响应解析(5 处 taskId 兜底 + 8 层递归找 mp4,优先按字段名顺序避免封面图抢先);注册进 settings 预设与易好快捷配置。
+### P2
+6. **运镜全链路(原版 ca55b49)**:纯提示词层——storyboard_breaker 注入 22 词运镜库 + 按段落类型选择(铺垫/对话/情绪/动作/爆点/悬疑)+ 子镜头 description 写法硬规则(运镜写在【镜头N】开头,再写画面、再写台词);prompt_generator 注入 video_prompt 运镜硬规则(每 3 秒段必须含「起始景别+运动方式+速度」,禁止纯静止镜头)+ 运镜五分类词库 + 速度副词 + 慢动作例外。
+7. **换脸面板升级**:批量换脸(基础形象+全部变体,单张失败不中断)、批量下载结果、恢复原貌(首次载入快照)。
+8. **默认视频模型优先级(原版 e653b75+b78f9bf)**:易好快捷配置改为 MiniMax 98 > Wan 3.0 97 > Seedance 96 > RunningHub 95(Seedance 垫底);内容语言选择器由 4 语言下拉改为 **15 语种 5 列网格**(对齐原版 lang-picker-grid)。
+- DB 迁移:storyboards +title/location/time/result/atmosphere/sound_effect/description/subtitle_url/setting_tags/reference_images/deleted_at;dramas +creative_description/skip_creative/total_episodes;ai_service_configs +settings。
+- 截图 48~51。

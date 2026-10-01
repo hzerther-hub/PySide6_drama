@@ -28,6 +28,8 @@ class CharacterFaceSwapDialog(QDialog):
         self.cfg_id = face_cfg_id
         self.source_path: str | None = None
         self.result_path: str | None = None
+        self._original_snapshot: dict | None = None  # 恢复原貌快照
+        self._batch_running = False
         self.setWindowTitle(f"{tr('face_swap')} · {character['name']}")
         self.resize(760, 560)
         root = QVBoxLayout(self)
@@ -91,6 +93,21 @@ class CharacterFaceSwapDialog(QDialog):
         opt.addWidget(self.go_btn)
         root.addLayout(opt)
 
+        mid_row = QHBoxLayout()
+        self.batch_btn = QPushButton("▶ 批量换脸(全部形象)")
+        self.batch_btn.clicked.connect(self._batch)
+        self.download_btn = QPushButton("↓ 批量下载结果")
+        self.download_btn.setEnabled(False)
+        self.download_btn.clicked.connect(self._download_all)
+        revert_btn = QPushButton("↺ 恢复原貌")
+        revert_btn.clicked.connect(self._restore_original)
+        self.results: dict[str, str] = {}  # label -> 结果路径
+        mid_row.addWidget(self.batch_btn)
+        mid_row.addWidget(self.download_btn)
+        mid_row.addWidget(revert_btn)
+        mid_row.addStretch(1)
+        root.addLayout(mid_row)
+
         bottom = QHBoxLayout()
         bottom.addStretch(1)
         cancel = QPushButton(tr("cancel"))
@@ -104,6 +121,29 @@ class CharacterFaceSwapDialog(QDialog):
         self.status = QLabel("")
         self.status.setObjectName("muted")
         root.addWidget(self.status)
+
+    def _load_char_images(self) -> list[tuple[str, str, str]]:
+        """返回该角色全部待换脸图片 [(label, image_url, local_path)],含基础形象与所有变体。"""
+        c = self.character
+        items: list[tuple[str, str, str]] = []
+        if c.get("image_url"):
+            items.append(("基础形象", c["image_url"], str(config.media_url_to_path(c["image_url"]))))
+        for v in db.q("SELECT * FROM character_variants WHERE character_id=? AND image_url IS NOT NULL",
+                      (c["id"],)):
+            items.append((v["label"] or "变体", v["image_url"],
+                          str(config.media_url_to_path(v["image_url"]))))
+        if not self._original_snapshot and c.get("image_url"):
+            self._original_snapshot = {"image_url": c["image_url"]}
+        return items
+
+    def _restore_original(self):
+        """恢复原貌:把快照写回角色形象(仅在存在快照时可用)。"""
+        if not self._original_snapshot:
+            QMessageBox.information(self, tr("redraw"), "没有可恢复的原始形象快照")
+            return
+        db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
+              (self._original_snapshot["image_url"], db.now(), self.character["id"]))
+        QMessageBox.information(self, tr("redraw"), "已恢复原始形象")
 
     # ── 源脸 ──
     def _pick_source(self):
@@ -155,6 +195,67 @@ class CharacterFaceSwapDialog(QDialog):
             self.apply_btn.setEnabled(True)
             self.status.setText("✅ 完成,可预览后应用")
         TASKMGR.submit("face_swap", job, done)
+
+    def _batch(self):
+        """批量换脸:对该角色全部形象(基础+变体)逐张换脸,单张失败不中断。"""
+        if not self.source_path:
+            QMessageBox.information(self, tr("face_swap"), "请先选择源脸照片")
+            return
+        ok_, msg = face_swap.health(config_id=self.cfg_id)
+        if not ok_:
+            QMessageBox.warning(self, tr("face_swap"), msg)
+            return
+        items = self._load_char_images()
+        if not items:
+            QMessageBox.information(self, tr("face_swap"), "该角色还没有形象图")
+            return
+        self._batch_running = True
+        self.batch_btn.setEnabled(False)
+        all_faces, enhance, cfg_id = self.all_faces.isChecked(), self.enhance.isChecked(), self.cfg_id
+        src = self.source_path
+
+        def job(tid):
+            out = {}
+            for label, _url, local in items:
+                try:
+                    p = face_swap.swap_one(local, src, swap_all_faces=all_faces,
+                                           face_enhance=enhance, config_id=cfg_id)
+                    out[label] = str(p)
+                except Exception:  # noqa: BLE001
+                    out[label] = ""
+            return out
+
+        def done(tid, result, err_):
+            self._batch_running = False
+            self.batch_btn.setEnabled(True)
+            if err_:
+                QMessageBox.warning(self, tr("face_swap"), str(err_)[:400])
+                return
+            self.results = result or {}
+            okn = sum(1 for v in self.results.values() if v)
+            first = next((v for v in self.results.values() if v), None)
+            if first:
+                self.result_path = first
+                self.res_img.setPixmap(W.pixmap_from_media(first, 236, 236))
+            self.download_btn.setEnabled(okn > 0)
+            self.status.setText(f"✅ 完成 {okn}/{len(self.results)} 张")
+
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.submit("face_swap_batch", job, done)
+
+    def _download_all(self):
+        from ..core import download as dl_mod
+        n = 0
+        for label, p in (self.results or {}).items():
+            if not p:
+                continue
+            try:
+                dl_mod.download_media("/static/" + p.split("static/")[-1].replace("\\", "/"),
+                                      f"{self.character['name']}_{label}.png")
+                n += 1
+            except Exception:  # noqa: BLE001
+                continue
+        ok(f"已下载 {n} 张结果")
 
     def _apply(self):
         if not self.result_path:

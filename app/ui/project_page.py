@@ -438,6 +438,17 @@ class ProjectPage(QWidget):
             self.load(self.drama_id)
             ok("项目设置已保存")
 
+    def can_add_episode(self) -> bool:
+        """集数限制(对齐原版 canAddEpisode):未配置→不限制;集数=1→单集完结;已达总数→禁止。"""
+        d = db.q1("SELECT total_episodes FROM dramas WHERE id=?", (self.drama_id,))
+        target = (d["total_episodes"] if d else None)
+        if not target or int(target) <= 0:
+            return True
+        current = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (self.drama_id,))["c"]
+        if int(target) == 1:
+            return False
+        return current < int(target)
+
     def reload(self):
         while self.ep_lay.count():
             item = self.ep_lay.takeAt(0)
@@ -449,9 +460,13 @@ class ProjectPage(QWidget):
             card = EpisodeCard(dict(ep))
             card.enter.connect(self._on_enter)
             self.ep_lay.addWidget(card)
-        add = QPushButton("＋ " + tr("add_episode"))
-        add.clicked.connect(self._add_episode)
-        self.ep_lay.addWidget(add)
+        if self.can_add_episode():
+            add = QPushButton("＋ " + tr("add_episode"))
+            add.clicked.connect(self._add_episode)
+            self.ep_lay.addWidget(add)
+        else:
+            hint = W.muted("项目已设单集完结(集数=1)或已达计划总集数;如需继续添加,请在「项目设置」里调整")
+            self.ep_lay.addWidget(hint)
         self.ep_lay.addStretch(1)
         while self.lib_grid.count():
             item = self.lib_grid.takeAt(0)

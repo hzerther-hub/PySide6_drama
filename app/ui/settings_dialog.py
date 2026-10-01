@@ -6,7 +6,7 @@ import json
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+                               QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
                                QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
@@ -168,15 +168,23 @@ class SettingsDialog(QDialog):
         box = W.make_card()
         f = QFormLayout(box)
         f.setContentsMargins(14, 14, 14, 14)
-        self.lang_combo = QComboBox()
-        for code, name in LANGS:
-            self.lang_combo.addItem(f"{name} ({code})", code)
+        # 15 语种网格选择器(对齐原版 lang-picker-grid:5 列网格,点即用)
+        self.lang_btns: dict[str, QPushButton] = {}
+        grid_holder = QWidget()
+        grid = QGridLayout(grid_holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
         cur = db.get_setting("content_language", "zh")
-        i = self.lang_combo.findData(cur)
-        self.lang_combo.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("ui_language"), self.lang_combo)
+        for i, (code, name) in enumerate(LANGS):
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setChecked(code == cur)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, c=code: self._pick_lang(c))
+            self.lang_btns[code] = b
+            grid.addWidget(b, i // 5, i % 5)
+        f.addRow(tr("ui_language"), grid_holder)
         f.addRow("", W.muted(tr("language_note") + "  ·  UI × 15 / AI × 15"))
-        self.lang_combo.currentIndexChanged.connect(self._change_lang)
         theme_box = QWidget()
         trow = QHBoxLayout(theme_box)
         trow.setContentsMargins(0, 0, 0, 0)
@@ -194,8 +202,9 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
-    def _change_lang(self):
-        lang = self.lang_combo.currentData()
+    def _pick_lang(self, lang: str):
+        for code, b in self.lang_btns.items():
+            b.setChecked(code == lang)
         db.set_setting("content_language", lang)
         db.set_setting("ui_language", lang)
         from ..core.i18n import set_language

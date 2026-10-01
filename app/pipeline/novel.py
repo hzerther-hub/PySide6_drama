@@ -54,10 +54,30 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
 目标字数: {ep['target_words'] or 2500}
 上一章结尾(衔接用): {prev_summary}
 
-请输出本章正文。"""
+请输出本章正文。
+
+同时为本章起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀),
+把章节名作为独立一行写在正文最前面,格式为 `# 章节名`。"""
     content = runner.run_agent("novel_writer", prompt, config_id=config_id)
-    db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (content, db.now(), episode_id))
+    _save_with_title(episode_id, content)
     return content
+
+
+def _save_with_title(episode_id: int, content: str) -> str:
+    """保存正文;若首行是 `# 章节名`,顺带写回 episodes.title(对齐原版 save_episode_content.chapter_title)。"""
+    import re as _re
+    text = (content or "").strip()
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        return content
+    m = _re.match(r"^#\s*(.+?)\s*$", text.splitlines()[0]) if text.splitlines() else None
+    if m:
+        name = _clean_chapter_name(m.group(1))
+        if name:
+            _apply_chapter_title(dict(ep), name)
+            return db.q1("SELECT content FROM episodes WHERE id=?", (episode_id,))["content"] or ""
+    db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (text, db.now(), episode_id))
+    return text
 
 
 def write_chapter_with_review(episode_id: int, config_id: int | None = None) -> dict:
@@ -142,3 +162,62 @@ def export_book(drama_id: int, out_dir: str) -> str:
         name = f"第{ep['episode_number']}章 {title}".strip().replace("/", "_")[:70]
         (root / f"{name}.txt").write_text(ep["content"] or "", encoding="utf-8")
     return str(root)
+
+
+def _clean_chapter_name(raw: str) -> str:
+    """章节名清洗(三级,对齐原版):取首行 → 去「第N集」前缀 → 去引号/井号 → 截断 20 字。"""
+    import re as _re
+    lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
+    if not lines:
+        return ""
+    name = _re.sub(r"^第\d+集[:：、\s]*", "", lines[0])
+    name = _re.sub(r"^[#《「『\"'\s]+|[#》」』\"'\s]+$", "", name)
+    return name[:20].strip()
+
+
+def _apply_chapter_title(ep, name: str) -> str:
+    """写回 episodes.title = 「第N集 <name>」,并同步正文首行 `# <name>`。"""
+    import re as _re
+    title = f"第{ep['episode_number']}集 {name}"
+    text = ep["content"] or ""
+    if _re.match(r"^#\s+", text):
+        new_text = _re.sub(r"^#\s+.*$", f"# {name}", text, count=1)
+    else:
+        new_text = f"# {name}\n\n{text}"
+    db.ex("UPDATE episodes SET title=?, content=?, updated_at=? WHERE id=?",
+          (title, new_text, db.now(), ep["id"]))
+    return name
+
+
+def gen_chapter_title(episode_id: int, config_id: int | None = None) -> str:
+    """一键 AI 起章节名(对齐原版 POST /novel/chapter-title)。
+
+    上下文:总纲节选 400 字 + 前三章摘要(各 200 字) + 本章正文节选 2000 字,
+    要求输出简短、有钩子、不超过 12 汉字、不带「第N集」前缀的纯文本章节名。
+    """
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集不存在")
+    text = ep["content"] or ""
+    if len(text.strip()) < 50:
+        raise RuntimeError("本集正文太短,先粘贴或生成原文再起章节名")
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
+    parts: list[str] = []
+    if d["novel_outline"]:
+        parts.append("【总纲节选】\n" + (d["novel_outline"] or "")[:400])
+    prev = db.q("SELECT episode_number, content FROM episodes WHERE drama_id=? AND episode_number<? "
+                "ORDER BY episode_number DESC LIMIT 3", (ep["drama_id"], ep["episode_number"]))
+    if prev:
+        lines = [f"第{r['episode_number']}集摘要:" + " ".join((r["content"] or "").split())[:200]
+                 for r in reversed(prev)]
+        parts.append("【前文摘要】\n" + "\n".join(lines))
+    else:
+        parts.append("【前文摘要】(本章为第一章)")
+    parts.append("【本章正文节选】\n" + " ".join(text.split())[:2000])
+    parts.append("请为本章起一个简短、有钩子感的章节名:不超过 12 个汉字,不带「第N集」前缀。")
+    parts.append("只输出章节名本身(一行纯文本,不要引号、书名号、前缀和任何解释)。")
+    raw = runner.run_agent("novel_writer", "\n".join(parts), config_id=config_id)
+    name = _clean_chapter_name(raw)
+    if not name:
+        raise RuntimeError("AI 未返回有效章节名,请重试")
+    return _apply_chapter_title(ep, name)

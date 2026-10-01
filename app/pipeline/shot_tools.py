@@ -21,23 +21,29 @@ def _ffmpeg() -> str:
     return ff
 
 
-def collect_reference_images(episode_id: int, text: str, limit: int = 4) -> list[str]:
-    """从分镜文本中收集 @角色名 引用的角色形象图本地路径(去重,限 limit 张)。"""
-    names = set(re.findall(r"@([\u4e00-\u9fa5A-Za-z0-9_·]+)", text or ""))
-    if not names:
+def collect_reference_images(episode_id: int, storyboard_id: int, limit: int | None = None) -> list[str]:
+    """该分镜的参考图本地路径列表(单一真相源,顺序=角色→场景→道具)。
+
+    不再用正则猜 @名字,而是走 refs.build_shot_reference_list,与 @图片N 序号严格对齐
+    (对齐原版 buildShotReferenceList,修复 @名字 与 reference_image_urls 序号错位 bug)。
+    """
+    from . import refs as refs_mod
+    sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
+    if not sb:
         return []
-    refs: list[str] = []
-    rows = db.q(
-        f"SELECT c.name, c.image_url FROM characters c "
-        f"JOIN episode_characters ec ON ec.character_id=c.id WHERE ec.episode_id=?", (episode_id,))
-    for r in rows:
-        if r["name"] in names and r["image_url"]:
-            p = config.media_url_to_path(r["image_url"])
-            if p.exists():
-                refs.append(str(p))
-        if len(refs) >= limit:
-            break
-    return refs
+    sb = dict(sb)
+    out = []
+    for item in refs_mod.build_shot_reference_list(sb, limit):
+        p = config.media_url_to_path(item["image_url"])
+        if p.exists():
+            out.append(str(p))
+    return out
+
+
+def resolve_prompt(sb: dict, limit: int | None = None) -> str:
+    """分镜提示词的 @名字 → @图片N名字 序号替换(名字按长度降序匹配,避免前缀误命中)。"""
+    from . import refs as refs_mod
+    return refs_mod.resolve_video_prompt_refs(sb.get("video_prompt") or sb.get("content") or "", sb, limit)
 
 
 def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | None = None) -> str:
@@ -103,11 +109,12 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
         generate_first_frame(episode_id, storyboard_id, config_id=config_id)
         sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
         first = sb["first_frame_image"]
-    refs = collect_reference_images(episode_id, sb["content"] or "")
+    ref_list = collect_reference_images(episode_id, storyboard_id)
+    prompt = resolve_prompt(dict(sb))
     path, _provider = video_client.generate_video(
-        (sb["video_prompt"] or sb["content"])[:1500], resolution=resolution,
+        prompt[:1500], resolution=resolution,
         duration=int(sb["duration"] or 8),
-        first_frame=config.media_url_to_path(first), reference_images=refs,
+        first_frame=config.media_url_to_path(first), reference_images=ref_list,
         config_id=config_id)
     db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
           (config.path_to_media_url(path), db.now(), storyboard_id))

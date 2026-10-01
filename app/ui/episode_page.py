@@ -323,7 +323,11 @@ class EpisodePage(QWidget):
         self.edit_instr.setPlaceholderText("按指令改稿:如「把开头改得更抓人」「加强母亲戏份」")
         edit_btn = QPushButton("✏ 改稿")
         edit_btn.clicked.connect(self._edit_chapter)
+        self.title_btn = QPushButton("✎ 章节名")
+        self.title_btn.setToolTip("本集还没有章节名:AI 会参考前文摘要与总纲,根据正文自动起名并写回标题与正文首行")
+        self.title_btn.clicked.connect(self._gen_chapter_title)
         bar2.addWidget(plan_btn)
+        bar2.addWidget(self.title_btn)
         bar2.addWidget(review_btn)
         bar2.addWidget(self.edit_instr, 1)
         bar2.addWidget(edit_btn)
@@ -334,6 +338,8 @@ class EpisodePage(QWidget):
         ep = self._ep
         self.raw_edit.setPlainText(ep["content"] or "")
         self.words_spin.setValue(ep["target_words"] or 0)
+        if hasattr(self, "title_btn"):
+            self.title_btn.setVisible(self._chapter_name_missing() and bool(ep["content"]))
         self.style_edit.setText(db.get_setting("novel_style", "爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置"))
 
 
@@ -407,6 +413,26 @@ class EpisodePage(QWidget):
                 QMessageBox.information(self, tr("batch_write"),
                                         f"完成 {len(result or [])} 章,其中 {fixed} 章经审校自动修复")
         TASKMGR.submit("novel_batch", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+
+
+    def _chapter_name_missing(self) -> bool:
+        """标题为空或只有「第N集」= 缺章节名(对齐原版 chapterNameMissing)。"""
+        t = (self._ep["title"] or "").strip()
+        return (not t) or bool(__import__("re").match(r"^第\d+集\s*$", t))
+
+    def _gen_chapter_title(self):
+        from ..pipeline import novel as novel_pipe
+        self._save_raw_silent()
+        def job(tid):
+            return novel_pipe.gen_chapter_title(self.episode_id, config_id=self.text_model.currentData())
+        def done(tid, result, err_):
+            if err_:
+                err(err_)
+                return
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            self._reload_raw()
+            ok("章节名已写入:" + str(result))
+        TASKMGR.submit("novel_title", job, done, episode_id=self.episode_id)
 
     def _open_plan(self):
         from .novel_dialogs import NovelPlanDialog
@@ -824,7 +850,11 @@ class EpisodePage(QWidget):
         play.setToolTip("播放")
         play.setEnabled(bool(r["video_url"] or r["composed_video_url"]))
         play.clicked.connect(lambda _=False, u=r["video_url"] or r["composed_video_url"]: self._play_video(u))
-        for b in (ff_btn, i2v_btn, sub_btn, tts_btn, redo, play):
+        dl_btn = QPushButton("↓")
+        dl_btn.setToolTip("下载该镜头视频")
+        dl_btn.setEnabled(bool(r["video_url"] or r["composed_video_url"]))
+        dl_btn.clicked.connect(lambda _=False, rr=r: self._download_sb(rr))
+        for b in (ff_btn, i2v_btn, sub_btn, tts_btn, redo, play, dl_btn):
             head.addWidget(b)
         lay.addLayout(head)
         content = QLabel(r["content"] or "")
@@ -841,6 +871,14 @@ class EpisodePage(QWidget):
             "UPDATE storyboards SET narration=? WHERE id=?", (t.text(), li)))
         lay.addWidget(narr)
         return box
+
+    def _download_sb(self, sb: dict):
+        from ..core import download as dl_mod
+        try:
+            p = dl_mod.download_storyboard_video(sb)
+            ok(f"已下载:{p.name}")
+        except Exception as e:  # noqa: BLE001
+            err(str(e))
 
     def _gen_first_frame(self, sb_id: int):
         from ..pipeline import shot_tools
@@ -927,11 +965,11 @@ class EpisodePage(QWidget):
             from ..pipeline import shot_tools
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
-            prompt = sb["video_prompt"] or sb["content"]
-            refs = shot_tools.collect_reference_images(self.episode_id, sb["content"] or "")
+            prompt = shot_tools.resolve_prompt(dict(sb))
+            ref_list = shot_tools.collect_reference_images(self.episode_id, sb_id)
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
-                first_frame=sb["first_frame_image"], reference_images=refs,
+                first_frame=sb["first_frame_image"], reference_images=ref_list,
                 config_id=self.video_model.currentData())
             db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
                   (config.path_to_media_url(path), db.now(), sb_id))
@@ -1111,7 +1149,7 @@ class EpisodePage(QWidget):
             lay.addWidget(QLabel(f"{(m['created_at'] or '')[:16].replace('T',' ')} · {int(m['duration'] or 0)}s · {m['status']}"))
             lay.addStretch(1)
             dl = QPushButton(tr("download"))
-            dl.clicked.connect(lambda _=False, u=m["merged_url"]: self._open_file(u))
+            dl.clicked.connect(lambda _=False, mm=m: self._download_merge(mm))
             lay.addWidget(dl)
             self.merge_list.addWidget(box)
         self.merge_empty.setVisible(db.q1("SELECT id FROM video_merges WHERE episode_id=? LIMIT 1", (self.episode_id,)) is None)
@@ -1158,6 +1196,14 @@ class EpisodePage(QWidget):
     def _mark_done(self):
         db.ex("UPDATE episodes SET status='completed', updated_at=? WHERE id=?", (db.now(), self.episode_id))
         QMessageBox.information(self, tr("mark_done"), "OK")
+
+    def _download_merge(self, merge: dict):
+        from ..core import download as dl_mod
+        try:
+            p = dl_mod.download_merge(merge)
+            ok(f"已下载:{p.name}")
+        except Exception as e:  # noqa: BLE001
+            err(str(e))
 
     def _open_file(self, url: str | None):
         if url:
