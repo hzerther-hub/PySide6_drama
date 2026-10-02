@@ -73,3 +73,32 @@ def path_to_media_url(path: str | Path) -> str:
     except ValueError:
         return str(p)
     return "/static/" + rel.as_posix()
+
+
+def resolve_content_language(drama_id: int | None = None) -> str:
+    """项目级内容语言优先,回退全局 app_settings.content_language。
+
+    对齐原版 a6a47dc:dramas.language='auto' 表示跟随全局,其他值固定该语言,
+    各项目互不干扰。返回 15 语种之一。
+    """
+    import re as _re
+    from .i18n import LANGS
+    valid = {c for c, _ in LANGS}
+    if drama_id:
+        try:
+            from . import db
+            row = db.q1("SELECT language FROM dramas WHERE id=?", (drama_id,))
+            v = (row["language"] if row else None) or "auto"
+            if v and v != "auto" and v in valid:
+                return v
+        except Exception:  # noqa: BLE001
+            pass
+        # 内存态回退(调用发生在 db 初始化前)
+        try:
+            from . import db
+            g = db.get_setting("content_language", "zh")
+            if g in valid:
+                return g
+        except Exception:  # noqa: BLE001
+            pass
+    return "zh"

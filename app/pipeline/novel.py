@@ -42,7 +42,10 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
     d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     chapters = db.jload(d["novel_chapters"], [])
     plan = next((c for c in chapters if int(c.get("number", 0)) == ep["episode_number"]), {})
-    prev = db.q("SELECT episode_number, content FROM episodes WHERE drama_id=? AND episode_number<? ORDER BY episode_number DESC LIMIT 1",
+    # 上一章 = 集数紧邻且正文非空的那一集(降序取第一行,修原版「升序取到第1集」的 bug)
+    prev = db.q("""SELECT episode_number, content FROM episodes
+                  WHERE drama_id=? AND episode_number<? AND content IS NOT NULL AND content!=''
+                  ORDER BY episode_number DESC LIMIT 1""",
                 (ep["drama_id"], ep["episode_number"]))
     prev_summary = (prev[0]["content"] or "")[-800:] if prev else "(本章为第一章)"
     prompt = f"""小说设定:
@@ -56,7 +59,8 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
 
 请输出本章正文。
 
-同时为本章起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀),
+章节名优先沿用上面【本章计划】里的标题(原样使用,不要改写);
+无计划标题时再自行起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀)。
 把章节名作为独立一行写在正文最前面,格式为 `# 章节名`。"""
     content = runner.run_agent("novel_writer", prompt, config_id=config_id)
     _save_with_title(episode_id, content)
@@ -253,3 +257,55 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[st
         raise RuntimeError("AI 未返回有效章节名,请重试")
     _apply_chapter_title(ep, name)
     return name, "ai"
+
+# 写作红线(对齐原版 101759d):1 项目设定 / 2 总纲 / 3 世界观 / 4 故事合约 /
+# 5 角色设定 / 7 章节规划 全部完成才能生成(6 卷战略是节拍层,保持可选)
+NOVEL_REQUIRED_STEPS = [1, 2, 3, 4, 5, 7]
+STEP_NAMES = {1: "项目设定", 2: "总纲", 3: "世界观", 4: "故事合约",
+              5: "角色设定", 6: "卷战略", 7: "章节规划"}
+
+
+def check_novel_redlines(drama_id: int) -> list[int]:
+    """返回未完成的步骤号列表;空列表=设定齐全。"""
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
+    if not d:
+        return NOVEL_REQUIRED_STEPS
+    meta = db.jload(d["novel_meta"], {}) or {}
+    world = meta.get("world") or {}
+    contract = meta.get("contract") or {}
+    missing: list[int] = []
+    # 1 项目设定:标题 + 简介
+    if not (d["title"] or "").strip() or not (meta.get("intro") or "").strip():
+        missing.append(1)
+    # 2 总纲
+    if not (d["novel_outline"] or "").strip():
+        missing.append(2)
+    # 3 世界观:era + location
+    if not (str(world.get("era") or "").strip() and str(world.get("location") or "").strip()):
+        missing.append(3)
+    # 4 故事合约:pov + rules(非空)+ tones(非空)
+    rules, tones = contract.get("rules") or [], contract.get("tones") or []
+    if not (contract.get("pov") and any(str(r or "").strip() for r in rules) and len(tones) > 0):
+        missing.append(4)
+    # 5 角色设定
+    if not db.q1("SELECT id FROM characters WHERE drama_id=? LIMIT 1", (drama_id,)):
+        missing.append(5)
+    # 7 章节规划
+    if not (len(db.jload(d["novel_chapters"], []) or []) > 0):
+        missing.append(7)
+    return missing
+
+
+def assert_novel_ready(drama_id: int) -> None:
+    """写作红线守卫:未补齐设定时拒绝生成,提示缺哪几步(对齐原版 400 兜底)。"""
+    missing = check_novel_redlines(drama_id)
+    if missing:
+        names = "、".join(str(s) for s in missing)
+        raise RuntimeError(f"小说设定未完成(缺步骤 {names}),请先在「策划与设定」补齐后再生成")
+
+
+def missing_steps_text(drama_id: int) -> str:
+    missing = check_novel_redlines(drama_id)
+    if not missing:
+        return ""
+    return "、".join(f"{s}({STEP_NAMES.get(s, '')})" for s in missing)

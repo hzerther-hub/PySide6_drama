@@ -47,7 +47,12 @@ def health(base: str | None = None, config_id: int | None = None) -> tuple[bool,
         resp = requests.get(f"{_base}/health", timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            return True, f"{data.get('status','ok')} · {data.get('model','')}"
+            # 新版返回 {local:{ok}, remote:{ok}};旧版扁平 {ok}(对齐原版 09e76b8 修复)
+            ok_flag = data.get("local", {}).get("ok") if isinstance(data.get("local"), dict) else None
+            if ok_flag is None:
+                ok_flag = data.get("ok", False)
+            model = (data.get("model") or (data.get("local") or {}).get("model") or "")
+            return bool(ok_flag), f"{data.get('status', 'ok')} · {model}"
         return False, resp.text[:200]
     except Exception as e:  # noqa: BLE001
         return False, f"服务不可达({_base}):{e}"

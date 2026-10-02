@@ -6,7 +6,8 @@ from ..agents import runner
 from ..core import db
 
 
-def rewrite_script(episode_id: int, style_hint: str = "", config_id: int | None = None) -> str:
+def rewrite_script(episode_id: int, style_hint: str = "", config_id: int | None = None,
+                  lang: str | None = None) -> str:
     """AI 改写当前集原文为格式化剧本,写回 episodes.script_content。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:

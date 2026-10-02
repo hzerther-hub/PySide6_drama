@@ -6,7 +6,7 @@ from ..agents import runner
 from ..core import db
 
 
-def split_panels(episode_id: int, config_id: int | None = None) -> int:
+def split_panels(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
     """整集重新生成漫画分镜格;返回格数。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
@@ -15,7 +15,7 @@ def split_panels(episode_id: int, config_id: int | None = None) -> int:
     if not script.strip():
         raise RuntimeError("请先完成剧本")
     prompt = f"剧本(第 {ep['episode_number']} 集):\n{script[:14000]}"
-    data = runner.run_agent_json("comic_board", prompt, config_id=config_id)
+    data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=config_id)
     panels = data.get("panels") or (data if isinstance(data, list) else [])
     if not panels:
         raise RuntimeError("漫画分镜结果为空")

@@ -8,7 +8,8 @@ from ..agents import runner
 from ..core import db
 
 
-def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None) -> int:
+def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
+                    lang: str | None = None) -> int:
     """整集重新拆分分镜;返回数量。删除旧分镜(有视频的保留? 对齐原版:重拆=全量替换)。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
@@ -22,7 +23,7 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
 {script[:14000]}
 
 可用资产(@引用): {assets}"""
-    data = runner.run_agent_json("storyboard_breaker", prompt, config_id=config_id)
+    data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang, config_id=config_id)
     boards = data.get("storyboards") or (data if isinstance(data, list) else [])
     if not boards:
         raise RuntimeError("分镜结果为空")
@@ -38,7 +39,7 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     return len(boards)
 
 
-def gen_video_prompts(episode_id: int, config_id: int | None = None) -> int:
+def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
     """批量补齐/重写每镜 video_prompt(prompt_generator Agent);返回处理数。"""
     rows = db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (episode_id,))
     if not rows:
@@ -52,7 +53,7 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None) -> int:
 分镜 #{r['storyboard_number']}:
 {r['content'][:1500]}"""
         try:
-            data = runner.run_agent_json("prompt_generator", prompt, config_id=config_id)
+            data = runner.run_agent_json("prompt_generator", prompt, lang=lang, config_id=config_id)
             vp = data.get("video_prompt") if isinstance(data, dict) else None
             if vp:
                 db.ex("UPDATE storyboards SET video_prompt=?, updated_at=? WHERE id=?", (vp, db.now(), r["id"]))

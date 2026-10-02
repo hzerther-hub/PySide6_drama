@@ -176,3 +176,21 @@
 - **正文标题行反向提取**(不调模型):新增 `extract_title_from_content()` 支持两种写法——markdown 标题 `# 归乡的井` 与 `第1集 县医院的消毒水味`;清洗书名号/引号/尾部标点;超过 30 字视为正文不当作标题(实测:两种写法均正确提取,超长行与普通正文行均返回空)。
 - `gen_chapter_title()` 改为**优先反向提取**(返回 source='content',省一次模型调用),提取不到才走 AI(返回 source='ai');仅在标题为占位时才提取,避免覆盖用户已改好的名字;UI 按来源给出「已提取章节名:」/「章节名已写入:」两种提示。
 - 截图 52(剧集卡章节名按钮:EP01 已有名字不显示 / EP99 缺名显示)。
+
+## 2026-09-29(第 14 轮:同步原版最新 4 提交,基线推进到 a6a47dc)
+> 原版从 73b3339 推进到 a6a47dc,新增 4 项,全部复刻。
+### 1. 残缺分镜自动补全(daa17d0)
+- 新增 `pipeline/storyboard_repair.py`:**判定**——`image_prompt` 为空 → 缺 image_prompt;`storyboard_characters` 零行且 description 含 `@角色名`(正则 `/@([^\s@，。；：、!！?？)）]{1,20})/g` + 剥括号注释,如 `@王德厚（王父）`→`王德厚`)→ 缺 character_links;**修复**——逐个调 prompt_generator 补 image_prompt + character_ids + prop_ids + scene_id;**成败以落库为准**(不信 agent 自述):要求 image_prompt 非空且关联行数 > 0 才算完成。
+- UI:分镜页「⟳ 自动补全 N」按钮,**仅残缺时显示**(无残缺自动消失不占位),运行时禁用并显示进度;完成 toast 区分全成功/有失败两种。
+### 2. 写作红线 1/2/3/4/5/7 + 章节名沿用 + 上一章衔接(101759d)
+- **写作红线**:`NOVEL_REQUIRED_STEPS = [1,2,3,4,5,7]`(6 卷战略为节拍层保持可选),`check_novel_redlines()` 逐条判定——1 标题+简介 / 2 总纲 / 3 世界观(era+location,读**落库的** novel_meta 而非向导内存草稿)/ 4 故事合约(pov+rules 非空+tones 非空)/ 5 角色表有行 / 7 章节规划非空;`assert_novel_ready()` 后端兜底拒绝,`missing_steps_text()` 给出「1(项目设定)、2(总纲)…」。
+- UI 前置守卫:设定未齐时禁用「AI 生成小说 / 批量写」并 toast + tooltip 提示缺哪几步;短剧/漫画项目不受红线约束。
+- **章节名沿用清单**:`write_chapter` 提示词改为「章节名优先沿用【本章计划】里的标题(原样使用,不要改写);无计划标题时再自行起名」——保证重新生成后章节名稳定不漂移。
+- **上一章衔接修复**:`prev` 查询加 `content IS NOT NULL AND content != ''` 过滤(原版 bug:`lt` 过滤后按升序取第一行拿到的是**第 1 集**,重写第 5 章时衔接第 1 章结尾导致跨章断裂)。
+### 3. 换脸健康检查(09e76b8)
+- `face_swap.health()` 改为读 `data.local.ok` 并以 `data.ok` 兜底(新版本地/远程嵌套 `{local:{ok},remote:{ok}}`,旧版扁平 `{ok}`),修「本地服务正常但下拉永远显示未启动」的前端字段路径 bug。
+### 4. 项目级内容语言(a6a47dc)
+- 新增 `dramas.language TEXT DEFAULT 'auto'`('auto'=跟随全局,其他=固定该语言);`config.resolve_content_language(drama_id)` 三段式优先级:显式传入 > 项目覆盖 > 全局设置。
+- **全链路贯通**:rewriter / extractor / storyboard / prompts_gen / comic / novel 六类 pipeline 的 agent 调用全部新增 `lang` 参数;工作台 `EpisodePage.load()` 进入项目时按项目语言 `set_language()`,并把 `_drama_lang` 传给所有 UI 调用点。
+- UI:项目设置弹窗新增「内容语言」下拉(跟随全局 + 15 语种),新建项目对话框同步。
+- 截图 53(分镜页「⟳ 自动补全 6」按钮)。

@@ -11,7 +11,7 @@ ROLE_MAP = {"lead": "lead", "supporting": "supporting", "extra": "extra",
             "主角": "lead", "配角": "supporting", "龙套": "extra"}
 
 
-def extract_assets(episode_id: int, config_id: int | None = None) -> dict:
+def extract_assets(episode_id: int, config_id: int | None = None, lang: str | None = None) -> dict:
     """提取并入库;返回统计。与项目已有资产按名字去重(同名更新描述,否则新增)。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
@@ -33,7 +33,7 @@ def extract_assets(episode_id: int, config_id: int | None = None) -> dict:
 角色: {', '.join(existing['characters']) or '无'}
 场景: {', '.join(existing['scenes']) or '无'}
 道具: {', '.join(existing['props']) or '无'}"""
-    data = runner.run_agent_json("extractor", prompt, config_id=config_id)
+    data = runner.run_agent_json("extractor", prompt, lang=lang, config_id=config_id)
     ts = db.now()
     stat = {"characters": 0, "scenes": 0, "props": 0}
 

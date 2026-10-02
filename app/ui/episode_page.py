@@ -28,7 +28,7 @@ from ..pipeline import rewriter
 from ..pipeline import storyboard as sb_pipe
 from ..pipeline import stitch as stitch_pipe
 from . import widgets as W
-from .toast import err, ok
+from .toast import err, ok, warn
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -144,6 +144,11 @@ class EpisodePage(QWidget):
         ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
         self._drama, self._ep = d, ep
         self.title.setText(f"{d['title']} · {tr('episode_n').format(ep['episode_number'])}")
+        # 应用项目级内容语言(对齐原版 a6a47dc):进入不同项目时切换产出语言
+        from ..core.config import resolve_content_language
+        from ..core.i18n import set_language
+        self._drama_lang = resolve_content_language(drama_id)
+        set_language(self._drama_lang)
         nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (episode_id,))["c"]
         nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
         self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
@@ -300,10 +305,12 @@ class EpisodePage(QWidget):
         self.style_edit.setPlaceholderText(tr("style_label"))
         save_btn = QPushButton(tr("save"))
         save_btn.clicked.connect(self._save_raw)
-        novel_btn = W.primary_btn(tr("ai_novel"))
-        novel_btn.clicked.connect(self._ai_novel)
-        batch_btn = QPushButton(tr("batch_write"))
-        batch_btn.clicked.connect(self._batch_novel)
+        self.novel_btn = W.primary_btn(tr("ai_novel"))
+        self.novel_btn.clicked.connect(self._ai_novel)
+        novel_btn = self.novel_btn
+        self.batch_btn = QPushButton(tr("batch_write"))
+        self.batch_btn.clicked.connect(self._batch_novel)
+        batch_btn = self.batch_btn
         bar.addWidget(QLabel(tr("target_words")))
         bar.addWidget(self.words_spin)
         bar.addWidget(QLabel(tr("style_label")))
@@ -335,6 +342,8 @@ class EpisodePage(QWidget):
         self.raw_edit.setPlainText(ep["content"] or "")
         self.words_spin.setValue(ep["target_words"] or 0)
         self.style_edit.setText(db.get_setting("novel_style", "爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置"))
+        if hasattr(self, "novel_btn"):
+            self._update_novel_gate()
 
 
     def _open_ai_edit(self, editor):
@@ -363,8 +372,33 @@ class EpisodePage(QWidget):
         self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
         QMessageBox.information(self, tr("save"), "OK")
 
+    def _novel_redline_hint(self) -> str:
+        """写作红线提示:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。"""
+        try:
+            from ..pipeline import novel as novel_pipe
+            if self._drama.get("work_type") != "novel":
+                return ""
+            missing = novel_pipe.missing_steps_text(self.drama_id)
+            return f"请先完成步骤 {missing} 的设定" if missing else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _update_novel_gate(self):
+        """设定未齐时禁用「AI 生成小说/批量写」并在工具条提示(对齐原版前端守卫)。"""
+        hint = self._novel_redline_hint()
+        if hasattr(self, "novel_btn"):
+            self.novel_btn.setEnabled(not hint)
+            self.novel_btn.setToolTip(hint or "AI 生成本章")
+        if hasattr(self, "batch_btn"):
+            self.batch_btn.setEnabled(not hint)
+            self.batch_btn.setToolTip(hint or "批量写本章及后续")
+
     def _ai_novel(self):
         from ..pipeline import novel as novel_pipe
+        hint = self._novel_redline_hint()
+        if hint:
+            warn(hint)
+            return
         def job(tid):
             if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
                 idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
@@ -382,6 +416,10 @@ class EpisodePage(QWidget):
         TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _batch_novel(self):
+        hint = self._novel_redline_hint()
+        if hint:
+            warn(hint)
+            return
         self._save_raw_silent()
         n = db.q1("SELECT MAX(episode_number) m FROM episodes WHERE drama_id=?", (self.drama_id,))["m"] or 0
         want, ok = QInputDialog_getInt(self, tr("batch_write"), "N =", 3, 1, 20)
@@ -497,7 +535,7 @@ class EpisodePage(QWidget):
         self._save_raw_silent()
         def job(tid):
             return rewriter.rewrite_script(self.episode_id, self.style_edit.text().strip(),
-                                           config_id=self.text_model.currentData())
+                                           config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, err):
             if err:
                 err("AI")
@@ -623,7 +661,7 @@ class EpisodePage(QWidget):
 
     def _extract(self, scope: str):
         def job(tid):
-            return extract_pipe.extract_assets(self.episode_id, config_id=self.text_model.currentData())
+            return extract_pipe.extract_assets(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, err):
             if err:
                 err("AI")
@@ -783,6 +821,11 @@ class EpisodePage(QWidget):
         video_btn = W.primary_btn(tr("batch_video"))
         video_btn.clicked.connect(self._batch_video)
         bar.addWidget(split_btn)
+        self.repair_btn = W.primary_btn("⟳ 自动补全 0")
+        self.repair_btn.setToolTip("修复拆分中断留下的残缺分镜:补出图提示词 + 绑定角色/场景/道具参考素材")
+        self.repair_btn.setVisible(False)
+        self.repair_btn.clicked.connect(self._repair_storyboards)
+        bar.addWidget(self.repair_btn)
         bar.addWidget(prompts_btn)
         bar.addWidget(video_btn)
         bar.addStretch(1)
@@ -809,6 +852,7 @@ class EpisodePage(QWidget):
         self.sb_meta.setText(tr("segments", len(rows)) + f" · {tr('total_dur', int(total))}")
         for r in rows:
             self.sb_list.addWidget(self._sb_row(dict(r)))
+        self._load_incomplete()
         self._refresh_status()
 
     def _sb_row(self, r: dict) -> QWidget:
@@ -909,10 +953,49 @@ class EpisodePage(QWidget):
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
+    def _load_incomplete(self):
+        """检测残缺分镜;有才显示补全按钮(无残缺自动消失不占位)。"""
+        if not getattr(self, "repair_btn", None) or not self.episode_id:
+            return
+        try:
+            from ..pipeline import storyboard_repair as R
+            self._incomplete = R.list_incomplete(self.episode_id)
+        except Exception:  # noqa: BLE001
+            self._incomplete = []
+        n = len(self._incomplete or [])
+        self.repair_btn.setVisible(n > 0)
+        if n:
+            self.repair_btn.setText(f"⟳ 自动补全 {n}")
+
+    def _repair_storyboards(self):
+        from ..core.taskmgr import TASKMGR
+        ids = [x["id"] for x in (self._incomplete or [])]
+        if not ids:
+            return
+        self.repair_btn.setEnabled(False)
+        self.repair_btn.setText("⟳ 补全中 0/0")
+        def job(tid):
+            from ..pipeline import storyboard_repair as R
+            return R.repair_storyboards(self.episode_id, ids,
+                                        config_id=self.text_model.currentData(),
+                                        lang=getattr(self, "_drama_lang", None))
+        def done(tid, result, err_):
+            self.repair_btn.setEnabled(True)
+            if err_:
+                err(err_)
+                return
+            r = result or {}
+            if r.get("failed"):
+                warn(f"补全完成,{r['failed']} 个失败可重试")
+            else:
+                ok(f"补全完成,共修复 {r.get('completed', 0)} 个分镜")
+            self._reload_storyboard()
+        TASKMGR.submit("sb_repair", job, done, episode_id=self.episode_id)
+
     def _split_sb(self):
         def job(tid):
             return sb_pipe.split_storyboards(self.episode_id, self._drama["aspect_ratio"],
-                                             config_id=self.text_model.currentData())
+                                             config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, err):
             if err:
                 err("AI")
@@ -921,7 +1004,7 @@ class EpisodePage(QWidget):
 
     def _batch_vp(self):
         def job(tid):
-            return sb_pipe.gen_video_prompts(self.episode_id, config_id=self.text_model.currentData())
+            return sb_pipe.gen_video_prompts(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, err):
             if err:
                 err("AI")
@@ -1061,7 +1144,7 @@ class EpisodePage(QWidget):
 
     def _split_panels(self):
         def job(tid):
-            return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData())
+            return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, err):
             if err:
                 err("AI")

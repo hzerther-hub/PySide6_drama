@@ -62,6 +62,7 @@ DDL: list[str] = [
       novel_plan TEXT, novel_volume TEXT, novel_chapters TEXT, novel_meta TEXT,
       ethnicity TEXT DEFAULT 'auto',
       creative_description TEXT, skip_creative INTEGER DEFAULT 0, total_episodes INTEGER,
+      language TEXT DEFAULT 'auto',
       metadata TEXT,
       thumbnail TEXT, status TEXT DEFAULT 'pending',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
@@ -348,7 +349,8 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN description TEXT",
                 "ALTER TABLE storyboards ADD COLUMN subtitle_url TEXT",
                 "ALTER TABLE storyboards ADD COLUMN setting_tags TEXT",
-                "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT"):
+                "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT",
+                "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'"):
         try:
             db.execute(col)
         except Exception:  # noqa: BLE001

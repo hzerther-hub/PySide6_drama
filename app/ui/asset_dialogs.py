@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QHBox
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from ..core import config, db
-from ..core.i18n import tr
+from ..core.i18n import LANGS, tr
 from . import widgets as W
 
 ASPECTS = [("16:9", "16:9 · 横屏"), ("9:16", "9:16 · 竖屏"), ("1:1", "1:1 · 方形"), ("adaptive", "自适应")]
@@ -55,6 +55,15 @@ class ProjectSettingsDialog(QDialog):
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("visual_style"), self.style)
+        # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
+        self.language = QComboBox()
+        self.language.addItem("跟随全局设置", "auto")
+        for code, name in LANGS:
+            self.language.addItem(f"{name} ({code})", code)
+        _li = self.language.findData(d["language"] or "auto")
+        self.language.setCurrentIndex(_li if _li >= 0 else 0)
+        f.addRow("内容语言", self.language)
+        f.addRow("", W.muted("本项目的剧本/资产/分镜等 AI 产出固定使用该语言,不影响其他项目"))
         self.ethnicity = QComboBox()
         for v, label in ETHNICITIES:
             self.ethnicity.addItem(label, v)
@@ -101,13 +110,14 @@ class ProjectSettingsDialog(QDialog):
         meta["intro"] = self.intro.text().strip()
         meta["genre"] = self.genre.text().strip()
         db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
-               creative_description=?, skip_creative=?, total_episodes=?, updated_at=? WHERE id=?""",
+               creative_description=?, skip_creative=?, total_episodes=?, language=?, updated_at=? WHERE id=?""",
               (self.title.text().strip() or "未命名", self.aspect.currentData(),
                self.style.currentData(), self.ethnicity.currentData(),
                json.dumps(meta, ensure_ascii=False),
                None if self.skip_creative.isChecked() else self.creative.toPlainText().strip(),
                1 if self.skip_creative.isChecked() else 0,
-               self.total_eps.value(), db.now(), self.drama_id))
+               self.total_eps.value(), self.language.currentData(),
+               db.now(), self.drama_id))
         self.accept()
 
 
