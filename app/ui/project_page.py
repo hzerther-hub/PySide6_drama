@@ -14,6 +14,7 @@ from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
 from .toast import err, ok
+from .cover_dialog import CoverPanel, EpisodeCoverButton
 
 STATUS_META = {
     "pending": ("待开始", "#86909c"),
@@ -33,8 +34,9 @@ class EpisodeCard(QFrame):
     enter = Signal(int)
     _reload_needed = Signal()
 
-    def __init__(self, ep: dict):
+    def __init__(self, ep: dict, on_changed=None):
         super().__init__()
+        self._on_changed = on_changed
         self.setObjectName("card")
         self.episode_id = ep["id"]
         self.setFixedHeight(150)
@@ -99,6 +101,9 @@ class EpisodeCard(QFrame):
         st.setObjectName("muted")
         mid.addWidget(st)
         mid.addStretch(1)
+        self.cover_btn = EpisodeCoverButton(ep, on_done=self._on_changed)
+        self.cover_btn.setFixedHeight(30)
+        mid.addWidget(self.cover_btn)
         del_btn = W.danger_btn(tr("delete"))
         del_btn.setFixedHeight(30)
         del_btn.setMinimumWidth(56)
@@ -401,6 +406,11 @@ class ProjectPage(QWidget):
         self.sub = W.muted("")
         root.addWidget(self.sub)
 
+        # 项目封面区在 load() 中按 drama_id 构建
+        self.cover_holder = QWidget()
+        self.cover_holder.setLayout(QVBoxLayout())
+        root.addWidget(self.cover_holder)
+
         self.tabs = QTabWidget()
         ep_holder = QWidget()
         self.ep_lay = QVBoxLayout(ep_holder)
@@ -466,6 +476,14 @@ class ProjectPage(QWidget):
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama_id,))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]
         self.sub.setText(f"{tr('characters_n', nc)} · {tr('scenes_n', ns)} · {tr('episodes_n', ne)}")
+        # 项目封面区(3:4 竖版 + 提示词 + 生成 + 放大预览)
+        ch = self.cover_holder.layout()
+        while ch.count():
+            item = ch.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        ch.addWidget(CoverPanel(drama_id, on_changed=self.reload))
         self.reload()
 
     def _open_settings(self):
@@ -493,7 +511,7 @@ class ProjectPage(QWidget):
                 w.deleteLater()
         rows = db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
         for ep in rows:
-            card = EpisodeCard(dict(ep))
+            card = EpisodeCard(dict(ep), on_changed=self.reload)
             card.enter.connect(self._on_enter)
             card._reload_needed.connect(self.reload)
             self.ep_lay.addWidget(card)

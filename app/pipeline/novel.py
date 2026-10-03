@@ -105,17 +105,86 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None) -> 
     return {"content": content, "review": review, "fixed": False}
 
 
-def generate_cover(drama_id: int, config_id: int | None = None) -> str:
+def load_cover_asset_refs(drama_id: int, limit: int = 5) -> list[str]:
+    """封面参考图:角色 3 + 场景 1 + 道具 1,去重后截断(对齐原版 loadCoverAssetRefs)。
+
+    已有资产时喂给模型,保证封面人物/场景与正片一致;新建项目无资产则列表为空,
+    退回纯文字生成。
+    """
+    refs: list[str] = []
+    for sql in ("SELECT image_url FROM characters WHERE drama_id=? AND image_url IS NOT NULL ORDER BY id LIMIT 3",
+                "SELECT image_url FROM scenes WHERE drama_id=? AND image_url IS NOT NULL ORDER BY id LIMIT 1",
+                "SELECT image_url FROM props WHERE drama_id=? AND image_url IS NOT NULL ORDER BY id LIMIT 1"):
+        for r in db.q(sql, (drama_id,)):
+            u = (r["image_url"] or "").strip()
+            if u and u not in refs:
+                refs.append(u)
+    return refs[:limit]
+
+
+def _cover_style(drama_id: int) -> str:
+    d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
+    return db.style_prompt((d["comic_style"] or d["style"] or "3d") if d else "3d")
+
+
+def generate_cover(drama_id: int, prompt: str = "", config_id: int | None = None,
+                   size: str = "768x1024") -> str:
+    """AI 生成项目封面(3:4 竖版),写 dramas.thumbnail;返回 /static URL。
+
+    对齐原版 POST /novel/generate-cover:已有资产(角色/场景/道具)时作为参考图喂给模型,
+    要求人物长相与场景设定与正片完全一致;关键内容与书名留居中安全区,
+    七猫等 9:16 平台裁切也不伤主体。
+    """
     from ..ai import image_client
     d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
     if not d:
         raise RuntimeError("项目不存在")
-    style = db.style_prompt(d["style"] or "3d")
-    prompt = (f"{style}, 小说封面插图, 竖版海报构图, 核心场景与主角形象, "
-              f"主题: {(d['novel_outline'] or d['title'])[:200]}, 电影质感, 无文字")
-    out, _p = image_client.generate_image(prompt, out_name=f"cover_{drama_id}.png", config_id=config_id)
+    meta = db.jload(d["metadata"], {}) or {}
+    asset_refs = load_cover_asset_refs(drama_id)
+    text = (prompt or "").strip() or ", ".join(x for x in [
+        f"Book cover art for the novel 《{d['title']}》",
+        f"Genre: {meta.get('genre') or 'fiction'}",
+        f"Synopsis: {(meta.get('intro') or '')[:220]}",
+        "tall 3:4 portrait book cover, professional composition, dramatic cinematic lighting, high detail, no watermark",
+        "title text area and main subject kept inside the central safe zone (critical elements away from edges), "
+        "clean space reserved for title text",
+        ("The characters and setting must match the reference images exactly "
+         "(same faces, same outfits, same environment)") if asset_refs else "",
+        _cover_style(drama_id),
+    ] if x)
+    out, _p = image_client.generate_image(text, out_name=f"cover_{drama_id}.png",
+                                          config_id=config_id, size=size,
+                                          reference_images=asset_refs)
     url = config.path_to_media_url(out)
     db.ex("UPDATE dramas SET thumbnail=?, updated_at=? WHERE id=?", (url, db.now(), drama_id))
+    return url
+
+
+def generate_episode_cover(episode_id: int, prompt: str = "", config_id: int | None = None) -> str:
+    """AI 生成单章封面(3:4),写 episodes.thumbnail(不影响项目封面与正文)。"""
+    from ..ai import image_client
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("章节不存在")
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
+    asset_refs = load_cover_asset_refs(ep["drama_id"])
+    excerpt = " ".join((ep["content"] or "").split())[:200]
+    text = (prompt or "").strip() or ", ".join(x for x in [
+        f"Book cover art for chapter {ep['episode_number']} of the novel 《{(d or {}).get('title', '')}》",
+        f"Chapter title: {ep['title'] or ''}",
+        f"Chapter excerpt: {excerpt}" if excerpt else "",
+        "tall 3:4 portrait book cover, single dramatic scene, professional composition, cinematic lighting, "
+        "high detail, no text, no watermark",
+        "main subject kept inside the central safe zone (critical elements away from edges)",
+        ("The characters and setting must match the reference images exactly "
+         "(same faces, same outfits, same environment)") if asset_refs else "",
+        _cover_style(ep["drama_id"]),
+    ] if x)
+    out, _p = image_client.generate_image(text, out_name=f"epcover_{episode_id}.png",
+                                          config_id=config_id, size="768x1024",
+                                          reference_images=asset_refs)
+    url = config.path_to_media_url(out)
+    db.ex("UPDATE episodes SET thumbnail=?, updated_at=? WHERE id=?", (url, db.now(), episode_id))
     return url
 
 
@@ -156,6 +225,14 @@ def export_book(drama_id: int, out_dir: str) -> str:
         raise RuntimeError("项目不存在")
     root = Path(out_dir) / (d["title"].replace("/", "_")[:60])
     root.mkdir(parents=True, exist_ok=True)
+    # 封面:有 thumbnail 就复制到导出根目录(缺失不阻断导出,同原版)
+    if d["thumbnail"]:
+        try:
+            src = config.media_url_to_path(d["thumbnail"])
+            if src.exists():
+                (root / "封面.png").write_bytes(src.read_bytes())
+        except Exception:  # noqa: BLE001
+            pass
     (root / "设定.md").write_text(
         f"# {d['title']}\n\n## 总纲\n{d['novel_outline'] or ''}\n\n## 世界观\n{d['novel_world'] or ''}\n\n## 故事合约\n{d['novel_contract'] or ''}\n",
         encoding="utf-8")
