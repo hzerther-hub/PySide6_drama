@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSizePolicy,
                                QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..agents import prompts
@@ -423,33 +423,117 @@ class SettingsDialog(QDialog):
 
     # ── 关于 ──
     def _page_about(self) -> QWidget:
+        from ..core import updater
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
         lay.addWidget(W.h2(f"易好短剧 · {tr('version')} {config.APP_VERSION}"))
         lay.addWidget(W.muted("「易好短剧」(Yihao Drama) 的 PySide6 桌面实现,功能对齐原版。"))
         lay.addWidget(W.muted(f"语言 / Languages: {len(LANGS)}(中文/EN/日本語/한국어/Français/Deutsch/Italiano/Português/Español/Tiếng Việt/Türkçe/العربية/हिन्दी/Bahasa Indonesia/ภาษาไทย)"))
-        lay.addWidget(W.muted("核心:10 Agents · 20 风格预设 · 无损合并(easymerger) · 同款复刻(video-clone-lite) · FFmpeg 拼接+旁白混音"))
+        lay.addWidget(W.muted("核心:10 Agents · 11 Skills · 20 风格预设 · 无损合并(easymerger) · 同款复刻(video-clone-lite) · 封面体系"))
+
+        box = W.make_card()
+        b_lay = QVBoxLayout(box)
+        b_lay.setContentsMargins(14, 12, 14, 12)
+        row = QHBoxLayout()
+        self.ver_lab = W.muted(f"{tr('version')} {updater.current_version()}")
+        row.addWidget(self.ver_lab)
+        row.addStretch(1)
+        self.auto_update_cb = QCheckBox("启动时自动检查更新")
+        self.auto_update_cb.setChecked(updater.read_state().get("auto_check", True))
+        self.auto_update_cb.toggled.connect(
+            lambda on: updater.write_state(auto_check=on))
+        row.addWidget(self.auto_update_cb)
         check = QPushButton(tr("check_update"))
         check.clicked.connect(self._check_update)
-        lay.addWidget(check)
-        self.update_lab = QLabel("")
-        lay.addWidget(self.update_lab)
+        row.addWidget(check)
+        b_lay.addLayout(row)
+        self.update_lab = W.muted("")
+        self.update_lab.setWordWrap(True)
+        b_lay.addWidget(self.update_lab)
+        self.notes_lab = QPlainTextEdit()
+        self.notes_lab.setReadOnly(True)
+        self.notes_lab.setMaximumHeight(110)
+        self.notes_lab.setVisible(False)
+        b_lay.addWidget(self.notes_lab)
+        self.upd_btn = W.primary_btn("⬇ 立即下载并更新")
+        self.upd_btn.setVisible(False)
+        self.upd_btn.clicked.connect(self._do_update)
+        b_lay.addWidget(self.upd_btn)
+        self.prog = QProgressBar()
+        self.prog.setVisible(False)
+        b_lay.addWidget(self.prog)
+        lay.addWidget(box)
+        lay.addWidget(W.muted(f"更新源:{updater.FEED_URL}"))
         lay.addStretch(1)
+        self._upd_result = {}
         return w
 
     def _check_update(self):
-        import requests
-        try:
-            resp = requests.get("https://api.github.com/repos/hzerther-hub/PySide6_drama/releases/latest", timeout=10)
-            if resp.status_code == 200:
-                tag = resp.json().get("tag_name", "?")
-                self.update_lab.setText(f"GitHub latest: {tag} · {tr('version')} {config.APP_VERSION}")
-            else:
-                self.update_lab.setText(f"GitHub HTTP {resp.status_code}")
-        except Exception as e:  # noqa: BLE001
-            self.update_lab.setText(f"{e}"[:120])
+        """检查更新(后台线程,避免阻塞界面)。"""
+        from PySide6.QtCore import QThread
+        from ..core import updater
+        self.update_lab.setText("正在检查更新…")
+        res_holder = {}
 
+        class _T(QThread):
+            def run(self):
+                res_holder["r"] = updater.check()
+        th = _T()
+        th.finished.connect(lambda: self._show_update_result(res_holder.get("r", {})))
+        th.start()
+        self._upd_thread = th
+
+    def _show_update_result(self, r: dict):
+        if r.get("error"):
+            self.update_lab.setText("❌ " + r["error"])
+            self.upd_btn.setVisible(False)
+            self.notes_lab.setVisible(False)
+            return
+        if r.get("has_update"):
+            self.update_lab.setText(f"发现新版本 v{r['latest']}(当前 v{r['current']})")
+            if r.get("notes"):
+                self.notes_lab.setPlainText(r["notes"])
+                self.notes_lab.setVisible(True)
+            self.upd_btn.setVisible(bool(r.get("url")))
+            self._upd_result = r
+        else:
+            self.update_lab.setText(f"✅ 已是最新版本(v{r['latest']})")
+            self.upd_btn.setVisible(False)
+            self.notes_lab.setVisible(False)
+
+    def _do_update(self):
+        """下载并应用更新,完成后询问重启。"""
+        from PySide6.QtCore import QThread
+        from ..core import updater
+        url = self._upd_result.get("url", "")
+        if not url:
+            QMessageBox.warning(self, "更新失败", "没有可用的下载地址")
+            return
+        self.prog.setVisible(True)
+        self.upd_btn.setEnabled(False)
+        out = {}
+
+        class _T(QThread):
+            def run(self):
+                try:
+                    out["files"] = updater.do_update(url)
+                except Exception as e:  # noqa: BLE001
+                    out["err"] = str(e)
+        th = _T()
+
+        def finished():
+            self.prog.setVisible(False)
+            self.upd_btn.setEnabled(True)
+            if out.get("err"):
+                QMessageBox.warning(self, "更新失败", str(out["err"])[:300])
+                return
+            n = len(out.get("files", []))
+            if QMessageBox.question(self, "更新完成", f"已更新 {n} 个文件,立即重启生效吗?"):
+                updater.restart_app()
+        th.finished.connect(finished)
+        th.start()
+        self._upd_thread2 = th
 
 class _FlowLayout(QWidget):
     """真流式布局:子控件按可用宽度自动换行(模型标签/芯片用)。

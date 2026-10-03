@@ -51,7 +51,36 @@ def main() -> int:
     from .ui.main_window import MainWindow
     win = MainWindow()
     win.show()
+    _schedule_update_check(win)
     return app.exec()
+
+
+def _schedule_update_check(win) -> None:
+    """启动后静默检查更新:有新版才 toast 提示(可在「关于更新」关闭)。"""
+    from PySide6.QtCore import QTimer
+    from .core import updater
+
+    def _check():
+        if not updater.read_state().get("auto_check", True):
+            return
+        def done():
+            r = res.get("r") or {}
+            if r.get("has_update"):
+                from .ui.toast import ToastManager
+                ToastManager.toast(f"发现新版本 v{r['latest']},可在「设置 → 关于更新」升级", "info", 6000)
+        res: dict = {}
+
+        class _T(QThread):
+            def run(self):
+                res["r"] = updater.check()
+        try:
+            from PySide6.QtCore import QThread
+            th = _T()
+            th.finished.connect(done)
+            th.start()
+        except Exception:  # noqa: BLE001
+            pass
+    QTimer.singleShot(3000, _check)
 
 
 if __name__ == "__main__":

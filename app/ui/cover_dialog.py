@@ -80,9 +80,9 @@ class CoverPanel(QWidget):
         def job(tid):
             from ..pipeline import novel as novel_pipe
             return novel_pipe.generate_cover(self.drama_id, self.prompt.text().strip())
-        def done(tid, result, err_):
-            if err_:
-                err(err_)
+        def done(tid, result, error):
+            if error:
+                err(e_)
                 return
             self._url = result
             self.img.setPixmap(W.pixmap_from_media(result, 146, 196))
@@ -107,9 +107,9 @@ class EpisodeCoverButton(QPushButton):
         def job(tid):
             from ..pipeline import novel as novel_pipe
             return novel_pipe.generate_episode_cover(ep_id)
-        def done(tid, result, err_):
-            if err_:
-                err(err_)
+        def done(tid, result, error):
+            if error:
+                err(e_)
                 return
             ok("章封面已生成")
             if self._on_done:

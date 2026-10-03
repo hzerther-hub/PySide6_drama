@@ -305,9 +305,9 @@ class AssetDetailDialog(QDialog):
               "prop": prompts_gen.prop_prompt}[self.kind]
         def job(tid):
             return fn(self.row["id"])
-        def done(tid, result, err_):
-            if err_:
-                err(err_)
+        def done(tid, result, error):
+            if error:
+                err(e_)
             else:
                 ok("提示词已生成")
                 d2 = db.q1(f"SELECT final_prompt FROM {self.table} WHERE id=?", (self.row["id"],))
@@ -326,9 +326,9 @@ class AssetDetailDialog(QDialog):
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), self.row["id"]))
             return url
-        def done(tid, result, err_):
-            if err_:
-                err(err_)
+        def done(tid, result, error):
+            if error:
+                err(e_)
             else:
                 self.img.setPixmap(W.pixmap_from_media(result, 276, 276))
                 if self._on_changed:

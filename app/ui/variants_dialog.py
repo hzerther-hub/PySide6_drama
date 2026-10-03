@@ -123,8 +123,8 @@ class VariantsDialog(QDialog):
             if fp:
                 db.ex("UPDATE character_variants SET final_prompt=? WHERE id=?", (fp, vid))
             return fp
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             self.reload()
         TASKMGR.submit("prompt", job, done, character_id=self.character["id"])
@@ -138,8 +138,8 @@ class VariantsDialog(QDialog):
             db.ex("UPDATE character_variants SET image_url=? WHERE id=?",
                   (config.path_to_media_url(out), r["id"]))
             return str(out)
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             self.reload()
         TASKMGR.submit("image", job, done, character_id=self.character["id"])

@@ -122,9 +122,9 @@ class EpisodeCard(QFrame):
         def job(tid):
             from ..pipeline import novel as novel_pipe
             return novel_pipe.gen_chapter_title(episode_id)
-        def done(tid, result, err_):
-            if err_:
-                err(err_)
+        def done(tid, result, error):
+            if error:
+                err(e_)
                 return
             name, src = result
             ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))

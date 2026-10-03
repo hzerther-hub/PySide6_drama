@@ -79,6 +79,18 @@ class MainWindow(QMainWindow):
         tlay.addWidget(lang_btn)
         root.addWidget(top)
 
+        # AI 服务未就绪横幅(缺 text/image/video 任一即显示,点此去设置)
+        self.banner = QLabel()
+        self.banner.setContentsMargins(20, 8, 20, 8)
+        self.banner.setStyleSheet(
+            "background:#fff7e6;color:#ad6800;border-bottom:1px solid #ffd591;"
+            "font-weight:600;padding:6px 12px;")
+        self.banner.setCursor(Qt.PointingHandCursor)
+        self.banner.mousePressEvent = lambda _e: self._open_settings()
+        self.banner.setVisible(False)
+        root.addWidget(self.banner)
+        self._refresh_ai_banner()
+
         # 页面栈
         self.stack = QStackedWidget()
         self.projects_page = ProjectsPage()
@@ -110,6 +122,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(tr("app_title"))
         for key, icon, label_key in self._nav_defs:
             self.nav_btns[key].setText(f"{icon} {tr(label_key)}")
+
+    def _refresh_ai_banner(self):
+        """AI 服务就绪横幅:缺失时明确列出缺哪几类,点击直达设置。"""
+        try:
+            from ..ai import registry
+            miss = registry.missing_services()
+        except Exception:  # noqa: BLE001
+            return
+        if miss:
+            names = "、".join(registry.SVC_CN_LABEL.get(m, m) for m in miss)
+            self.banner.setText(f"⚠ AI 服务未配置完整(缺:{names}) — 依赖模型的操作会无法执行,点击此处去「设置 → AI 服务」补全")
+            self.banner.setVisible(True)
+        else:
+            self.banner.setVisible(False)
 
     def _goto(self, key: str):
         self.stack.setCurrentWidget(self.projects_page)
@@ -207,6 +233,7 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, on_language_changed=self._on_language_changed,
                              on_theme_changed=self._apply_theme_cb)
         dlg.exec()
+        self._refresh_ai_banner()
 
     def _on_language_changed(self, lang: str):
         self.retranslate()
@@ -315,8 +342,8 @@ class ClonePage(QWidget):
         from ..pipeline import video_clone
         def job(tid):
             return video_clone.analyze_reference(self.drama_id)
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             self.reload()
         TASKMGR.submit("clone_analyze", job, done, drama_id=self.drama_id)
@@ -326,8 +353,8 @@ class ClonePage(QWidget):
         d = db.q1("SELECT style FROM dramas WHERE id=?", (self.drama_id,))
         def job(tid):
             return video_clone.prepare_presenter(self.drama_id, d["style"])
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
         TASKMGR.submit("clone_presenter", job, done, drama_id=self.drama_id)
 
@@ -336,8 +363,8 @@ class ClonePage(QWidget):
         d = db.q1("SELECT style FROM dramas WHERE id=?", (self.drama_id,))
         def job(tid):
             return str(video_clone.generate_shot_image(self.drama_id, n, d["style"]))
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             self.reload()
         TASKMGR.submit("clone_image", job, done, drama_id=self.drama_id)
@@ -346,8 +373,8 @@ class ClonePage(QWidget):
         from ..pipeline import video_clone
         def job(tid):
             return str(video_clone.generate_shot_video(self.drama_id, n, "720p"))
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             self.reload()
         TASKMGR.submit("clone_video", job, done, drama_id=self.drama_id)
@@ -356,8 +383,8 @@ class ClonePage(QWidget):
         from ..pipeline import video_clone
         def job(tid):
             return str(video_clone.merge_clone(self.drama_id))
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err(tr("merge_now"))
             else:
                 import os

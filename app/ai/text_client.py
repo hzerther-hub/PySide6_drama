@@ -14,9 +14,7 @@ class AIError(RuntimeError):
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          temperature: float = 0.7, max_tokens: int = 8192,
          json_mode: bool = False, timeout: int = 300) -> str:
-    cfg = registry.default_config("text", config_id)
-    if not cfg:
-        raise AIError("未配置文本模型服务,请到「设置 → AI 服务」添加。")
+    cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if cfg.get("api_key"):

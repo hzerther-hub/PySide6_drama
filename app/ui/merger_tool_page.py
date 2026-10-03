@@ -99,7 +99,7 @@ class MergerToolPage(QWidget):
         # 后台检测
         def job(tid):
             return M.analyze(self.files)
-        def done(tid, result, err):
+        def done(tid, result, error):
             if err:
                 err(tr("detect"))
                 return
@@ -144,7 +144,7 @@ class MergerToolPage(QWidget):
         def job(tid):
             files = M.align_outliers(r)
             return M.analyze(files)
-        def done(tid, result, err):
+        def done(tid, result, error):
             if err:
                 err(tr("align_outliers"))
                 return
@@ -161,7 +161,7 @@ class MergerToolPage(QWidget):
         def job(tid):
             path, channel = M.auto_merge(self.files, out)
             return f"{channel} → {path}"
-        def done(tid, result, err):
+        def done(tid, result, error):
             if err:
                 err(tr("merge_now"))
             else:

@@ -26,6 +26,9 @@ def map_error(err: object) -> str:
     """把异常映射为用户可读文案(对齐原版 mapError 的优先级短路)。"""
     s = str(err) if err is not None else ""
     low = s.lower()
+    # AI 服务未就绪(未配置/停用/缺 Key/缺模型)——最高优先级,直接透传并给出去处
+    if "未就绪" in s or "未配置" in s and "服务" in s:
+        return s.replace("服务未就绪:", "").strip()
     if "failed to fetch" in low or "connection" in low or "connect" in low or "network" in low:
         return "网络连接失败,请检查网络或服务地址"
     if "timeout" in low or "timed out" in low or "超时" in s:

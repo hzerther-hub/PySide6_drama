@@ -80,8 +80,8 @@ class NovelPlanDialog(QDialog):
         from ..pipeline import novel as novel_pipe
         def job(tid):
             return novel_pipe.generate_cover(self.drama_id)
-        def done(tid, result, err):
-            if err:
+        def done(tid, result, error):
+            if error:
                 err("AI")
             else:
                 self.cover_lab.setPixmap(W.pixmap_from_media(result, 220, 116))

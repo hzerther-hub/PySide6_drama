@@ -81,8 +81,25 @@ class TaskManager(QObject):
     def active_count() -> int:
         return active_count()
 
+    # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)
+    TYPE_SERVICE = {
+        "script": "text", "novel": "text", "novel_batch": "text", "novel_edit": "text",
+        "novel_title": "text", "review": "text", "extract": "text", "storyboard": "text",
+        "prompt": "text", "comic": "text", "promo": "text", "sb_repair": "text",
+        "cover": "image", "image": "image", "face_swap": "faceswap", "face_swap_batch": "faceswap",
+        "video": "video", "tts": "tts",
+    }
+
     def submit(self, task_type: str, fn: Callable[..., object],
                done_cb: Callable | None = None, **links) -> int:
+        """提交后台任务。AI 类任务先做就绪校验:缺配置/Key 直接弹明确提示并返回 0(不建任务)。"""
+        svc = self.TYPE_SERVICE.get(task_type)
+        if svc:
+            from .preflight import ensure_ready
+            if not ensure_ready(svc):
+                if done_cb:
+                    done_cb(0, None, RuntimeError(f"{task_type} 已取消:{svc} 服务未就绪"))
+                return 0
         tid = create_task(task_type, **links)
         self.pool.start(_FnTask(tid, fn, self.signals, done_cb))
         self.signals.busy_changed.emit(True, task_type)

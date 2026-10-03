@@ -22,11 +22,7 @@ def _out_path() -> Path:
 def synthesize(text: str, voice: str = "BV001_streaming",
                target_duration: float | None = None, config_id: int | None = None) -> Path:
     """合成旁白 MP3。target_duration(秒)时自适应语速(对齐原版 narration_duration 逻辑)。"""
-    cfg = registry.default_config("tts", config_id)
-    if not cfg:
-        raise AIError("未配置配音(TTS)服务,请到「设置 → AI 服务 → 配音」添加。")
-    if not cfg.get("api_key"):
-        raise AIError("配音服务缺少 API Key(火山引擎访问令牌)。")
+    cfg = registry.check_ready("tts", config_id)  # 未配置/缺 Key 直接拦下
     base = cfg["base_url"].rstrip("/")
     key = cfg["api_key"]
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer; {key}"}

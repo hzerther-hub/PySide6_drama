@@ -163,7 +163,7 @@ class FaceSwapPage(QWidget):
                                          face_enhance=enhance, config_id=cfg_id)
                 outs.append((c, str(out)))
             return outs
-        def done(tid, result, err):
+        def done(tid, result, error):
             if err:
                 err(tr("face_swap"))
             for card, out in (result or []):

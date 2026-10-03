@@ -66,9 +66,7 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
     返回 (本地路径, provider)。
     """
-    cfg = registry.default_config("video", config_id)
-    if not cfg:
-        raise AIError("未配置视频生成服务,请到「设置 → AI 服务」添加。")
+    cfg = registry.check_ready("video", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     headers = {"Content-Type": "application/json"}
     if cfg.get("api_key"):

@@ -182,3 +182,69 @@ def seed_faceswap_default() -> None:
     if not (row := db.q1("SELECT id FROM ai_service_configs WHERE service_type='faceswap'")):
         add_config("faceswap", "local-insightface", "http://127.0.0.1:5678",
                    "inswapper_128", remark="本地 InsightFace", priority=0)
+
+
+# ── 就绪检查(缺失配置/Key 时直接拦下,不让请求白跑) ──
+SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
+                "faceswap": "换脸"}
+# 不需要 API Key 的 provider(本地服务)
+NO_KEY_PROVIDERS = {"local-faceswap", "local-insightface"}
+
+
+class NotConfigured(RuntimeError):
+    """AI 服务未就绪:未配置 / 未启用 / 缺 API Key / 缺模型名。"""
+
+    def __init__(self, service_type: str, reason: str, config_id: int | None = None):
+        self.service_type = service_type
+        self.reason = reason
+        self.config_id = config_id
+        label = SVC_CN_LABEL.get(service_type, service_type)
+        super().__init__(f"{label}服务未就绪:{reason}")
+
+
+def check_ready(service_type: str, config_id: int | None = None) -> dict:
+    """检查该类服务是否可用;不可用抛 NotConfigured(带明确原因)。
+
+    覆盖四种情况:未配置 / 全部停用 / 缺 API Key / 缺模型名或 Base URL。
+    """
+    rows = registry_list = list_configs(service_type)
+    if not rows:
+        raise NotConfigured(service_type, f"尚未配置{SVC_CN_LABEL.get(service_type, service_type)}服务,请到「设置 → AI 服务」添加")
+    if config_id:
+        cfg = next((r for r in rows if r["id"] == config_id), None)
+        if not cfg:
+            raise NotConfigured(service_type, "所选配置不存在", config_id)
+        if not cfg["is_active"]:
+            raise NotConfigured(service_type, "所选配置已停用,请在「设置 → AI 服务」启用", config_id)
+    else:
+        active = [r for r in rows if r["is_active"]]
+        if not active:
+            raise NotConfigured(service_type, f"所有{SVC_CN_LABEL.get(service_type, service_type)}配置都已停用,请在「设置 → AI 服务」启用")
+        cfg = dict(active[0])
+        for r in active:  # 优先级最高者
+            if int(r["priority"] or 0) > int(cfg.get("priority") or 0):
+                cfg = dict(r)
+    if not (cfg.get("model") or "").strip():
+        raise NotConfigured(service_type, "配置缺少模型名", cfg.get("id"))
+    if not (cfg.get("base_url") or "").strip():
+        raise NotConfigured(service_type, "配置缺少 Base URL", cfg.get("id"))
+    if cfg["provider"] not in NO_KEY_PROVIDERS and not (cfg.get("api_key") or "").strip():
+        raise NotConfigured(service_type, f"配置「{cfg.get('remark') or cfg['provider']}」缺少 API Key", cfg.get("id"))
+    return cfg
+
+
+def readiness() -> list[tuple[str, str, str]]:
+    """全局就绪概览:[(服务类型, 状态文案, 原因)],供 UI 横幅展示。"""
+    out = []
+    for st in ("text", "image", "video"):
+        try:
+            cfg = check_ready(st)
+            out.append((st, "ok", f"{cfg.get('remark') or cfg['provider']}/{cfg['model']}"))
+        except NotConfigured as e:
+            out.append((st, "missing", e.reason))
+    return out
+
+
+def missing_services() -> list[str]:
+    """缺失的核心服务类型(文本/图片/视频),空=齐备。"""
+    return [st for st, status, _ in readiness() if status != "ok"]

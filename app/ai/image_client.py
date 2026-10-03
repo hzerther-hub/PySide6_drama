@@ -33,9 +33,7 @@ def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None) -> tuple[Path, str]:
     """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。"""
-    cfg = registry.default_config("image", config_id)
-    if not cfg:
-        raise AIError("未配置图片生成服务,请到「设置 → AI 服务」添加。")
+    cfg = registry.check_ready("image", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     out_name = out_name or f"{uuid.uuid4().hex}.png"
     out = config.STATIC_DIR / "images" / out_name

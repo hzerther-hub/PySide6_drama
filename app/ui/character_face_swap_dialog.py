@@ -184,9 +184,9 @@ class CharacterFaceSwapDialog(QDialog):
         def job(tid):
             return str(face_swap.swap_one(template, src, swap_all_faces=all_faces,
                                           face_enhance=enhance, config_id=cfg_id))
-        def done(tid, result, err):
+        def done(tid, result, error):
             self.go_btn.setEnabled(True)
-            if err:
+            if error:
                 self.status.setText("❌ " + str(err)[:200])
                 return
             self.result_path = result
@@ -225,11 +225,11 @@ class CharacterFaceSwapDialog(QDialog):
                     out[label] = ""
             return out
 
-        def done(tid, result, err_):
+        def done(tid, result, error):
             self._batch_running = False
             self.batch_btn.setEnabled(True)
-            if err_:
-                QMessageBox.warning(self, tr("face_swap"), str(err_)[:400])
+            if error:
+                QMessageBox.warning(self, tr("face_swap"), str(e_)[:400])
                 return
             self.results = result or {}
             okn = sum(1 for v in self.results.values() if v)
