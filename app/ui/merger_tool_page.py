@@ -177,8 +177,7 @@ def _uid() -> str:
 
 
 def W_h1() -> QLabel:
-    from .toast import err, ok
-from . import widgets as W
+    from . import widgets as W
     return W.h1("▷ " + tr("merger_title"))
 
 
