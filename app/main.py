@@ -55,31 +55,39 @@ def main() -> int:
     return app.exec()
 
 
+_UP_THREADS: list = []
+
+
 def _schedule_update_check(win) -> None:
     """启动后静默检查更新:有新版才 toast 提示(可在「关于更新」关闭)。"""
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QTimer, QThread
     from .core import updater
+    from .ui.toast import ToastManager
 
     def _check():
+        """静默检查;有新版才提示,任何异常都不影响启动。"""
         if not updater.read_state().get("auto_check", True):
             return
+        res: dict = {}
+
         def done():
             r = res.get("r") or {}
             if r.get("has_update"):
-                from .ui.toast import ToastManager
-                ToastManager.toast(f"发现新版本 v{r['latest']},可在「设置 → 关于更新」升级", "info", 6000)
-        res: dict = {}
+                ToastManager.toast(
+                    f"发现新版本 v{r['latest']},可在「设置 → 关于更新」升级", "info", 6000)
 
         class _T(QThread):
             def run(self):
-                res["r"] = updater.check()
-        try:
-            from PySide6.QtCore import QThread
-            th = _T()
-            th.finished.connect(done)
-            th.start()
-        except Exception:  # noqa: BLE001
-            pass
+                try:
+                    res["r"] = updater.check()
+                except Exception:  # noqa: BLE001
+                    res["r"] = {"error": "check failed"}
+
+        th = _T()
+        th.finished.connect(done)
+        _UP_THREADS.append(th)   # 保持引用,避免 QThread 被回收导致进程退出
+        th.start()
+
     QTimer.singleShot(3000, _check)
 
 
