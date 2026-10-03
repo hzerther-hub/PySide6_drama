@@ -297,11 +297,14 @@ def check_novel_redlines(drama_id: int) -> list[int]:
 
 
 def assert_novel_ready(drama_id: int) -> None:
-    """写作红线守卫:未补齐设定时拒绝生成,提示缺哪几步(对齐原版 400 兜底)。"""
+    """写作红线守卫:未补齐设定时拒绝生成,提示缺哪几步。
+
+    消息压缩到 40 字内(对齐原版 0114f24):只报步骤号,名称由 UI 侧翻译补全,
+    避免长文本在错误提示里被截断。
+    """
     missing = check_novel_redlines(drama_id)
     if missing:
-        names = "、".join(str(s) for s in missing)
-        raise RuntimeError(f"小说设定未完成(缺步骤 {names}),请先在「策划与设定」补齐后再生成")
+        raise RuntimeError(f"小说设定未完成，请先补齐步骤 {'、'.join(str(s) for s in missing)}")
 
 
 def missing_steps_text(drama_id: int) -> str:

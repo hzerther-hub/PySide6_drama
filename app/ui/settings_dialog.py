@@ -8,8 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
-                               QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+                               QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
+                               QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..agents import prompts
 from ..ai import face_swap as fs_mod
@@ -366,22 +366,60 @@ class SettingsDialog(QDialog):
 
 
 class _FlowLayout(QWidget):
-    """简易流式布局(模板芯片/模型标签换行用)。"""
+    """真流式布局:子控件按可用宽度自动换行(模型标签/芯片用)。
+
+    用 move/resizeEvent 手动摆放;QHBoxLayout 不会换行,标签一多就会挤在一起文字重叠。
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(8)
+        self._items: list[QWidget] = []
+        self._h = 30
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
     def add(self, w: QWidget):
-        self._lay.addWidget(w)
+        self._items.append(w)
+        w.setParent(self)
+        w.show()
+        self._relayout()
 
     def clear(self):
-        while self._lay.count():
-            item = self._lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        for w in self._items:
+            w.setParent(None)
+            w.deleteLater()
+        self._items = []
+        self._h = 30
+
+    def _relayout(self):
+        if not self._items:
+            return
+        x = y = line_h = 0
+        maxw = max(1, self.width() - 2)
+        for w in self._items:
+            w.adjustSize()
+            ww, hh = w.width(), w.height()
+            if x > 0 and x + ww > maxw:
+                x = 0
+                y += line_h + 8
+                line_h = 0
+            w.move(x, y)
+            x += ww + 8
+            line_h = max(line_h, hh)
+        self._h = max(30, y + line_h)
+        self.setMinimumHeight(self._h)
+        self.updateGeometry()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._relayout()
+
+    def sizeHint(self):
+        from PySide6.QtCore import QSize
+        return QSize(self.width(), self._h)
+
+    def minimumSizeHint(self):
+        from PySide6.QtCore import QSize
+        return QSize(120, self._h)
 
 
 def _muted(text: str) -> QLabel:
@@ -479,28 +517,27 @@ class ServiceDialog(QDialog):
         head.addStretch(1)
         head.addWidget(W.tag(cn))
         root.addLayout(head)
-        root.addWidget(_muted("推荐先选择模板,系统会自动填入更合理的 `Base URL` 与默认模型。"))
-
-        self.tpl_flow = _FlowLayout()
-        for p in registry.PROVIDER_PRESETS.get(st, []):
-            b = QPushButton(p["name"])
-            b.setStyleSheet("QPushButton{border-radius:14px;padding:5px 14px;background:rgba(128,128,128,30);font-weight:600;}")
-            b.clicked.connect(lambda _=False, pr=p: self._apply_template(pr))
-            self.tpl_flow.add(b)
-        root.addWidget(self.tpl_flow)
+        root.addWidget(_muted("选择「服务商」后会自动填入更合理的 `Base URL` 与默认模型;需要其他厂商时选「自定义」直接填写。"))
 
         form = QFormLayout()
         form.setSpacing(8)
         self.name_edit = QLineEdit()
         form.addRow("配置名称", self.name_edit)
+        # 服务商:模板 label 与自定义合并为一个下拉(对齐原版 26c7d00,消除两处选供应商的困惑)
         self.provider_combo = QComboBox()
-        self.provider_combo.setEditable(True)
-        seen = []
+        self._tpl_by_index: dict[int, dict] = {}
+        CUSTOM = "__custom__"
         for p in registry.PROVIDER_PRESETS.get(st, []):
-            if p["provider"] not in seen:
-                seen.append(p["provider"])
-        self.provider_combo.addItems(seen)
+            idx = self.provider_combo.count()
+            self.provider_combo.addItem(p["name"])       # 显示模板 label,如「MiniMax 官方」
+            self._tpl_by_index[idx] = p
+        self._custom_idx = self.provider_combo.addItem("自定义…")
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_pick)
         form.addRow("服务商", self.provider_combo)
+        self.provider_edit = QLineEdit()
+        self.provider_edit.setPlaceholderText("服务商标识,如 openai / 自定义厂商名")
+        self.provider_edit.setVisible(False)
+        form.addRow("", self.provider_edit)
         self.priority_spin = QSpinBox()
         self.priority_spin.setRange(-99, 99)
         self.priority_spin.setValue(0)
@@ -540,24 +577,45 @@ class ServiceDialog(QDialog):
 
         if existing:
             self._prefill(_json)
+        elif self._tpl_by_index:
+            # 新建时默认选中首个模板并填充(下拉首项不会触发 currentIndexChanged)
+            self._on_provider_pick(self.provider_combo.currentIndex())
+
+    def _on_provider_pick(self, idx: int):
+        """选中模板 → 自动填配置名 / Base URL / 默认模型(原胶囊行为);选自定义 → 显示原始输入框。"""
+        tpl = self._tpl_by_index.get(idx)
+        if tpl:
+            self.name_edit.setText(f"{tpl['name']}-{SVC_CN[self._st]}")
+            self.base_url.setText(tpl["base_url"])
+            self.models_editor.set_models(list(tpl["models"]))
+            self.provider_edit.setVisible(False)
+        else:
+            self.provider_edit.setVisible(True)
+            self.provider_edit.setFocus()
 
     def _apply_template(self, p: dict):
-        self.name_edit.setText(f"{p['name']}-{SVC_CN[self._st]}")
-        i = self.provider_combo.findText(p["provider"])
-        if i >= 0:
-            self.provider_combo.setCurrentIndex(i)
-        else:
-            self.provider_combo.setCurrentText(p["provider"])
-        self.base_url.setText(p["base_url"])
-        self.models_editor.set_models(list(p["models"]))
+        """按模板填充(供测试/外部调用)。"""
+        for i, t in self._tpl_by_index.items():
+            if t is p:
+                self.provider_combo.setCurrentIndex(i)
+                return
+        self.provider_combo.setCurrentIndex(self._custom_idx)
+        self.provider_edit.setText(p["provider"])
 
     def _prefill(self, _json):
         e = self._existing
         self.name_edit.setText(e.get("remark") or "")
-        i = self.provider_combo.findText(e["provider"])
-        self.provider_combo.setCurrentIndex(i if i >= 0 else 0)
-        if i < 0:
-            self.provider_combo.setCurrentText(e["provider"])
+        # 回填:命中模板则选中该项,否则落到自定义
+        hit = -1
+        for i, t in self._tpl_by_index.items():
+            if t["provider"] == e["provider"]:
+                hit = i
+                break
+        if hit >= 0:
+            self.provider_combo.setCurrentIndex(hit)
+        else:
+            self.provider_combo.setCurrentIndex(self._custom_idx)
+            self.provider_edit.setText(e["provider"])
         self.priority_spin.setValue(int(e.get("priority") or 0))
         self.api_key.setText(e.get("api_key") or "")
         self.base_url.setText(e.get("base_url") or "")
@@ -565,6 +623,13 @@ class ServiceDialog(QDialog):
         self.models_editor.set_models(models)
         if e.get("temperature") is not None:
             self.temperature.setText(str(e["temperature"]))
+
+    def _current_provider(self) -> str:
+        """当前服务商标识:选中模板取其 provider,选自定义取输入框文本。"""
+        tpl = self._tpl_by_index.get(self.provider_combo.currentIndex())
+        if tpl:
+            return tpl["provider"]
+        return self.provider_edit.text().strip()
 
     def _collect(self) -> dict:
         temp_raw = self.temperature.text().strip()
@@ -577,7 +642,7 @@ class ServiceDialog(QDialog):
         models = self.models_editor.models or [""]
         return {"service_type": self._st,
                 "name": self.name_edit.text().strip(),
-                "provider": self.provider_combo.currentText().strip(),
+                "provider": self._current_provider(),
                 "base_url": self.base_url.text().strip(),
                 "api_key": self.api_key.text().strip(),
                 "priority": self.priority_spin.value(),
