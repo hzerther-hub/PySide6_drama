@@ -204,3 +204,25 @@
 ### 2. 小说设定闸门消息压缩(0114f24)
 - `assert_novel_ready()` 消息由「小说设定未完成(缺步骤 X),请先在「策划与设定」补齐后再生成」压缩为 **「小说设定未完成，请先补齐步骤 1、2、3」**(24 字,原版约束 40 字内),只报步骤号,名称由 UI 侧翻译补全,避免长文本在错误提示里被截断。
 - 截图 54/55(合并后的服务商下拉 + 真流式模型标签)。
+
+## 2026-09-29(第 16 轮:Agent 配置补齐 Skills + 15 语言全量同步)
+> 用户指出「生成小说/短剧的配置是否完成?注意是多语言的」——核查发现**未完成**:原版是 10 提示词 × 15 语言 = 150 文件 + 11 技能 × 15 语言 = 165 文件,而本版只有中文内置提示词,**Skills 一个都没有**,设置页也无 Skills 面板。
+### 配置文件全量同步(315 个)
+- `workspace/prompts/` 150 个:`<agent>.md` + `.en/.ja/.ko/.fr/.de/.it/.pt/.es/.vi/.tr/.ar/.hi/.id/.th` × 10 个 agent
+- `workspace/skills/` 165 个:11 个技能 × 15 语言
+  - comic-board / extractor / novel-writer / promo-writer / script-rewriter / storyboard-breaker
+  - prompt-generator 下 4 个子技能:character / scene / prop / video-prompt
+  - storyboard-breaker 下子技能:fight-cinematography
+### 技能加载器(`agents/prompts.py`)
+- `AGENT_SKILL_MAP` 按目录前缀挂载(对齐原版),`list_skills()` 同时识别**技能目录自身**与**子目录**(如 fight-cinematography)
+- `load_skills()` 把技能正文以 `## Skill: <name>` 段落拼进 instructions,语言回退链 `<lang> → en → zh`
+- `load_prompt(..., with_skills=True)` 统一组装:多语言文件 → 技能正文 → 非中文时追加显式输出语言指令
+- 新增 `load_skill / save_skill / reset_skill` 供设置页编辑
+- 实测:15 种语言提示词全部有内容(均 > 500 字符),`th` 语言 storyboard_breaker 含 2 个技能共 20740 字符
+### 设置页 Agent 配置(对齐原版截图)
+- 左侧列表加**技能数量徽标**(剧本改写 [1]、分镜拆解 [2]、提示词 [4] …)
+- 右侧改**双标签:System Prompt / Skills**
+  - System Prompt:路径提示 `workspace/prompts/<agent>[.<lang>].md` + 编辑器 + 保存/恢复默认
+  - Skills:左技能列表 + 右正文编辑器(显示 `skills/<id>/SKILL[.<lang>].md` 路径)+ 保存/恢复默认
+- 顶部语言下拉切换时,两个标签的内容与路径同时按语言切换
+- 截图 57/58/59(System Prompt 标签 / Skills 标签 / 日语技能路径)。

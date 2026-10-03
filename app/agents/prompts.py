@@ -162,9 +162,68 @@ AGENT_META: list[dict] = [
     {"type": "promo_writer", "icon": "📣", "name": "宣传文案"},
 ]
 
-# 可有语言变体文件的 agent(与原版一致,其余 agent 仅内置)
-FILE_AGENTS = {"script_rewriter", "extractor", "storyboard_breaker", "prompt_generator",
-               "comic_board", "novel_writer", "novel_planner", "novel_reviewer", "promo_writer"}
+# 每个 Agent 的 System Prompt 文件(workspace/prompts/<type>[.<lang>].md,15 语言变体)
+FILE_AGENTS = {a["type"] for a in AGENT_META}
+
+# 每个 Agent 挂载的技能(对齐原版 AGENT_SKILL_MAP;按目录前缀匹配,设置页新建的子技能免重启发现)
+AGENT_SKILL_MAP: dict[str, list[str]] = {
+    "script_rewriter": ["script-rewriter"],
+    "extractor": ["extractor"],
+    "storyboard_breaker": ["storyboard-breaker"],
+    "prompt_generator": [
+        "prompt-generator/character-prompt",
+        "prompt-generator/scene-prompt",
+        "prompt-generator/prop-prompt",
+        "prompt-generator/video-prompt",
+    ],
+    "novel_writer": ["novel-writer"],
+    "comic_board": ["comic-board"],
+    "promo_writer": ["promo-writer"],
+}
+
+
+def list_skills(agent_type: str) -> list[dict]:
+    """列出该 Agent 的技能(按目录前缀匹配:目录自身 + 其子目录,同原版 scanSkillPaths)。"""
+    root = config.WORKSPACE_DIR / "skills"
+    out = []
+    for prefix in AGENT_SKILL_MAP.get(agent_type, []):
+        d = root / prefix
+        if not d.is_dir():
+            continue
+        # 技能目录自身
+        if (d / "SKILL.md").exists():
+            out.append({"id": prefix, "name": d.name, "path": str(d / "SKILL.md"),
+                        "relative": f"skills/{prefix}/SKILL.md"})
+        # 子技能(如 storyboard-breaker/fight-cinematography)
+        for sub in sorted(d.iterdir()):
+            if sub.is_dir() and (sub / "SKILL.md").exists():
+                out.append({"id": f"{prefix}/{sub.name}", "name": sub.name,
+                            "path": str(sub / "SKILL.md"),
+                            "relative": f"skills/{prefix}/{sub.name}/SKILL.md"})
+    return out
+
+
+def load_skills(agent_type: str, lang: str = "zh") -> str:
+    """把该 Agent 全部技能正文拼进 instructions(按语言变体回退 en→zh)。"""
+    from pathlib import Path as _Path
+    chunks = []
+    for sk in list_skills(agent_type):
+        src = _Path(sk["path"])
+        if not src.exists():
+            continue
+        if lang != "zh":
+            for suf in (f".{lang}", ".en", ".zh"):
+                cand = src.with_name("SKILL" + suf + ".md")
+                if cand.exists():
+                    src = cand
+                    break
+        try:
+            body = src.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if body:
+            chunks.append(f"## Skill: {sk['name']}\n{body}")
+    return "\n\n".join(chunks)
 
 
 def prompt_file(agent: str, lang: str) -> config.Path:
@@ -172,17 +231,29 @@ def prompt_file(agent: str, lang: str) -> config.Path:
     return config.PROMPTS_DIR / f"{agent}{suffix}.md"
 
 
-def load_prompt(agent: str, lang: str = "zh") -> str:
-    """自定义文件 > 内置默认;非中文语言追加显式输出语言指令。"""
-    base = DEFAULT_PROMPTS.get(agent, "")
+def load_prompt(agent: str, lang: str = "zh", with_skills: bool = True) -> str:
+    """加载 Agent 的完整 instructions。
+
+    优先级:workspace 多语言文件(150 个,15 语言) > 内置默认;
+    按原版口径拼接该 Agent 的技能正文(skills/<prefix>/SKILL[.<lang>].md);
+    非中文语言追加显式输出语言指令。
+    """
+    base = ""
     if agent in FILE_AGENTS:
-        path = prompt_file(agent, lang)
-        if not path.exists():
-            path = prompt_file(agent, "zh")
-        if path.exists():
-            base = path.read_text(encoding="utf-8")
+        cands = ([prompt_file(agent, lang), prompt_file(agent, "zh")]
+                 if lang != "zh" else [prompt_file(agent, "zh")])
+        for cand in cands:
+            if cand.exists():
+                base = cand.read_text(encoding="utf-8")
+                break
+    if not base:
+        base = DEFAULT_PROMPTS.get(agent, "")
     if not base:
         raise ValueError(f"未知 Agent: {agent}")
+    if with_skills:
+        sk = load_skills(agent, lang)
+        if sk:
+            base = base + "\n\n" + sk
     if lang != "zh" and lang in LANG_OUTPUT_NAME:
         base += LANGUAGE_SUFFIX.format(lang=LANG_OUTPUT_NAME[lang])
     return base
@@ -199,9 +270,31 @@ def reset_prompt(agent: str, lang: str) -> None:
     path.unlink(missing_ok=True)
 
 
+def load_skill(skill_id: str, lang: str = "zh") -> str:
+    """读取单个技能正文(按语言回退 en→zh)。"""
+    base = config.WORKSPACE_DIR / "skills" / skill_id / "SKILL.md"
+    if lang != "zh":
+        for suf in (f".{lang}", ".en", ".zh"):
+            cand = base.with_name("SKILL" + suf + ".md")
+            if cand.exists():
+                return cand.read_text(encoding="utf-8")
+    return base.read_text(encoding="utf-8") if base.exists() else ""
+
+
+def save_skill(skill_id: str, content: str) -> None:
+    p = config.WORKSPACE_DIR / "skills" / skill_id / "SKILL.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+
+def reset_skill(skill_id: str) -> None:
+    (config.WORKSPACE_DIR / "skills" / skill_id / "SKILL.md").unlink(missing_ok=True)
+
+
 def seed_prompt_files() -> None:
-    """首次启动把内置提示词落盘为 workspace/prompts/*.md(设置页可编辑)。"""
+    """首次启动把内置提示词落盘为 workspace/prompts/*.md(仅补缺失,不覆盖用户已改内容)。"""
     for agent in FILE_AGENTS:
         path = prompt_file(agent, "zh")
         if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(DEFAULT_PROMPTS[agent], encoding="utf-8")

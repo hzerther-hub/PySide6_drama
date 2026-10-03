@@ -256,37 +256,81 @@ class SettingsDialog(QDialog):
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
+        # 左侧 Agent 列表(带技能数量徽标,对齐原版)
         self.agent_list = QListWidget()
-        self.agent_list.setFixedWidth(220)
+        self.agent_list.setFixedWidth(230)
         for a in prompts.AGENT_META:
-            QListWidgetItem(f"{a['icon']}  {a['name']}", self.agent_list)
+            n = len(prompts.list_skills(a["type"]))
+            badge = f"  [{n}]" if n else ""
+            QListWidgetItem(f"{a['icon']}  {a['name']}{badge}", self.agent_list)
         lay.addWidget(self.agent_list)
+
         right = QVBoxLayout()
-        self.agent_meta_lab = W.muted("")
-        right.addWidget(self.agent_meta_lab)
+        head = QHBoxLayout()
+        head.addWidget(W.h2(""))
+        self.agent_title = W.h2("")
+        head.addWidget(self.agent_title)
+        head.addStretch(1)
         self.agent_lang = QComboBox()
         for code, name in LANGS:
             self.agent_lang.addItem(name, code)
         self.agent_lang.setCurrentIndex(0)
-        self.agent_lang.currentIndexChanged.connect(self._load_agent_prompt)
-        right.addWidget(QLabel(tr("edit_lang_follow")))
-        right.addWidget(self.agent_lang)
+        self.agent_lang.currentIndexChanged.connect(self._load_agent_content)
+        head.addWidget(self.agent_lang)
+        right.addLayout(head)
+
+        # 双标签:System Prompt / Skills(对齐原版)
+        self.agent_tabs = QTabWidget()
+        prompt_page = QWidget()
+        p_lay = QVBoxLayout(prompt_page)
+        p_lay.setContentsMargins(0, 10, 0, 0)
+        self.prompt_path_lab = W.muted("")
+        p_lay.addWidget(self.prompt_path_lab)
         self.prompt_edit = QPlainTextEdit()
-        self.prompt_edit.setMinimumHeight(340)
-        right.addWidget(self.prompt_edit, 1)
-        btns = QHBoxLayout()
-        save = W.primary_btn(tr("save"))
-        save.clicked.connect(self._save_agent_prompt)
-        reset = QPushButton(tr("restore_default"))
-        reset.clicked.connect(self._reset_agent_prompt)
-        btns.addWidget(save)
-        btns.addWidget(reset)
-        btns.addStretch(1)
-        right.addLayout(btns)
+        self.prompt_edit.setMinimumHeight(320)
+        p_lay.addWidget(self.prompt_edit, 1)
+        p_btns = QHBoxLayout()
+        p_save = W.primary_btn(tr("save"))
+        p_save.clicked.connect(self._save_agent_prompt)
+        p_reset = QPushButton(tr("restore_default"))
+        p_reset.clicked.connect(self._reset_agent_prompt)
+        p_btns.addWidget(p_save)
+        p_btns.addWidget(p_reset)
+        p_btns.addStretch(1)
+        p_lay.addLayout(p_btns)
+        self.agent_tabs.addTab(prompt_page, tr("system_prompt"))
+
+        skill_page = QWidget()
+        s_lay = QVBoxLayout(skill_page)
+        s_lay.setContentsMargins(0, 10, 0, 0)
+        s_split = QHBoxLayout()
+        self.skill_list = QListWidget()
+        self.skill_list.setFixedWidth(200)
+        self.skill_list.currentRowChanged.connect(self._load_skill)
+        self.skill_path_lab = W.muted("")
+        self.skill_edit = QPlainTextEdit()
+        s_split.addWidget(self.skill_list)
+        right_col = QVBoxLayout()
+        right_col.addWidget(self.skill_path_lab)
+        right_col.addWidget(self.skill_edit, 1)
+        s_btns = QHBoxLayout()
+        s_save = W.primary_btn(tr("save"))
+        s_save.clicked.connect(self._save_skill)
+        s_reset = QPushButton(tr("restore_default"))
+        s_reset.clicked.connect(self._reset_skill)
+        s_btns.addWidget(s_save)
+        s_btns.addWidget(s_reset)
+        s_btns.addStretch(1)
+        right_col.addLayout(s_btns)
+        s_split.addLayout(right_col, 1)
+        s_lay.addLayout(s_split)
+        self.agent_tabs.addTab(skill_page, "Skills")
+        right.addWidget(self.agent_tabs, 1)
         lay.addLayout(right, 1)
-        self.agent_list.currentRowChanged.connect(lambda _i: self._load_agent_prompt())
+
+        self.agent_list.currentRowChanged.connect(lambda _i: self._load_agent_content())
         self.agent_list.setCurrentRow(0)
-        self._load_agent_prompt()
+        self._load_agent_content()
         return w
 
     def _current_agent(self) -> str:
@@ -295,15 +339,46 @@ class SettingsDialog(QDialog):
             return prompts.AGENT_META[row]["type"]
         return ""
 
-    def _load_agent_prompt(self):
+    def _load_agent_content(self):
         agent = self._current_agent()
-        lang = self.agent_lang.currentData()
         if not agent:
             return
+        meta = next((a for a in prompts.AGENT_META if a["type"] == agent), {})
+        self.agent_title.setText(f"{meta.get('icon','')} {meta.get('name', agent)}")
+        lang = self.agent_lang.currentData()
+        # System Prompt
         path = prompts.prompt_file(agent, lang)
         text = path.read_text(encoding="utf-8") if path.exists() else prompts.DEFAULT_PROMPTS.get(agent, "")
         self.prompt_edit.setPlainText(text)
-        self.agent_meta_lab.setText(tr("prompt_saved").format(agent) + (f".{lang}" if lang != "zh" else ""))
+        self.prompt_path_lab.setText(tr("prompt_saved").format(agent)
+                                      + (f".{lang}" if lang != "zh" else ""))
+        # Skills
+        self.skill_list.blockSignals(True)
+        self.skill_list.clear()
+        self._skills = prompts.list_skills(agent)
+        for sk in self._skills:
+            self.skill_list.addItem(sk["name"])
+        self.skill_list.blockSignals(False)
+        if self._skills:
+            self.skill_list.setCurrentRow(0)
+        self._load_skill()
+
+    def _current_skill_id(self) -> str:
+        row = self.skill_list.currentRow()
+        if 0 <= row < len(getattr(self, "_skills", [])):
+            return self._skills[row]["id"]
+        return ""
+
+    def _load_skill(self):
+        sid = self._current_skill_id()
+        if not sid:
+            self.skill_edit.setPlainText("")
+            self.skill_path_lab.setText("")
+            return
+        lang = self.agent_lang.currentData()
+        self.skill_edit.setPlainText(prompts.load_skill(sid, lang))
+        self.skill_path_lab.setText(f"skills/{sid}/SKILL.md"
+                                    + (f".{lang}" if lang != "zh" else ""))
 
     def _save_agent_prompt(self):
         agent = self._current_agent()
@@ -314,7 +389,18 @@ class SettingsDialog(QDialog):
         agent = self._current_agent()
         if agent:
             prompts.reset_prompt(agent, self.agent_lang.currentData())
-            self._load_agent_prompt()
+            self._load_agent_content()
+
+    def _save_skill(self):
+        sid = self._current_skill_id()
+        if sid:
+            prompts.save_skill(sid, self.skill_edit.toPlainText())
+
+    def _reset_skill(self):
+        sid = self._current_skill_id()
+        if sid:
+            prompts.reset_skill(sid)
+            self._load_skill()
 
     # ── 存储 ──
     def _page_storage(self) -> QWidget:
