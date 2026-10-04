@@ -38,6 +38,69 @@
 | 小说线 | 开书策划(总纲/世界观/合约/卷/章节)→ 逐章生成 → 六维审校 → 按指令改稿 → 导出整本 |
 | 数据 | SQLite 单文件(23 张表)+ 本体媒体存储,`data/` 目录即全部数据 |
 
+## 📊 功能对照表(原版 Web ↔ 本桌面版)
+
+### 一、原版功能对应
+
+| 原版模块 | 原版实现 | 本版对应 | 状态 |
+|---|---|---|---|
+| 项目启动台 | `pages/index.vue` | `ProjectsPage` | ✅ |
+| 新建项目(5 目标) | 同上 | `NewProjectDialog` | ✅ |
+| 项目详情/剧集列表 | `views/drama/detail.vue` | `ProjectPage` | ✅ |
+| 项目设置 | detail.vue 弹窗 | `ProjectSettingsDialog` | ✅ |
+| 素材库(角色/场景/道具) | detail.vue | `AssetDetailDialog` | ✅ |
+| 集工作台(六阶段) | `views/drama/episode.vue` (11.6k 行) | `EpisodePage` | ✅ |
+| 原始内容/AI 改写 | episode.vue scriptStep | `raw` / `rewrite` 面板 | ✅ |
+| 视漫制作(资产) | prodTab assets | `assets` 面板(常规/漫画双 tab) | ✅ |
+| 分镜/视频 | prodTab videos | `storyboard` 面板 | ✅ |
+| 漫画 | prodTab comic | `comic` 面板 | ✅ |
+| 拼接导出 | prodTab export | `export` 面板 | ✅ |
+| 设置(六分区) | `pages/settings.vue` | `SettingsDialog` | ✅ |
+| Agent 配置 | settings.vue | System Prompt / Skills 双标签 | ✅ |
+| 风格预设 | settings.vue | 20 条种子 + 编辑 | ✅ |
+| AI 服务(五类) | settings.vue | `ServiceDialog` | ✅ |
+| 换脸 | `tools/face-swap.vue` | 资产角色卡内换脸对话框 | ✅ |
+| 任务面板 | `useTaskDrawer` | `TaskPanel` | ✅ |
+
+### 二、多语言深度(原版所无)
+
+| 能力 | 原版 Web | 本版 |
+|---|---|---|
+| UI 语言 | 15 种 | 15 种 |
+| AI 内容语言 | 15 种(跟随项目) | 15 种(全局 + **项目级独立**) |
+| Agent 提示词变体 | 4 语言硬编码 | **15 语言**(150 文件) |
+| Skill 变体 | 4 语言 | **15 语言**(165 文件,含打斗运镜技能) |
+
+### 三、可靠性(源自原版后期加固)
+
+| 能力 | 说明 |
+|---|---|
+| LLM 挂起超时 | `AI_LLM_TIMEOUT_MS` 默认 300s,防服务商"接受连接不响应" |
+| 任务阶段可见 | `writing→reviewing→repairing→splitting` 写入 `sys_task.params.stage` |
+| 写后校验 | 以数据库为准判定成功,`content<200` 判失败(防"显示完成实则空章") |
+| 分镜后台拆解 | 防重入 + 垃圾行清理 + 6s 轮询(原同步 HTTP 会被代理掐断) |
+| 防误覆盖 | 已有正文的章节整批拒绝,需显式"重写"才放行 |
+| 中断任务归位 | 重启时按"产出是否已落"判 completed/failed,不一律 failed |
+| 参考图序号 | 单一真相源,`@图片N ≡ reference_image_urls[N-1]` |
+
+### 四、本版增量(原版没有)
+
+| 能力 | 说明 |
+|---|---|
+| 批量建集 | 1–999 集一次插入(原版逐个建集) |
+| 伏笔台账 | LCS≥5 去重 + 40 条封顶 + 埋设章号回填 + 可交互勾选 |
+| 审校明细/全书清单 | 逐条勾选标记 + 跨章跳转 |
+| 整章朗读 | 按句切 600 字,逐块 TTS 拼 MP3 |
+| 三段式进度条 | 成功/失败/进行中 + 图例 + 每章阶段 |
+| 制作阶段条 | 按产物判定 5 态(正文→剧本→资产→分镜→成片) |
+| 剧集卡字数进度 | `X/Y 字`,低于 80% 标琥珀色 |
+| 封面体系 | 项目封面(资产参考图)+ 单章封面,均 3:4 |
+| 语速自适应 TTS | 双引擎 + ffprobe 实测超时自动提速重合成(≤2 轮) |
+| AI 未就绪拦截 | 未配置/缺 Key 时点按钮立即提示,不静默失败 |
+| 自动更新 | GitHub Releases 检查 → 备份覆盖 → 询问重启 |
+| 无损合并工具 | ffprobe 参数检测 + 三通道合并 + 失败回退链 |
+| 同款复刻 | 爆款视频结构迁移到你的产品 |
+
 ## 🚀 快速开始
 
 ```bash
@@ -45,8 +108,19 @@
 pip install -r requirements.txt
 
 # 运行
-python app/main.py
+python -m app.main          # 推荐(包内模块方式)
+# 或双击 start.bat
 ```
+
+<details>
+<summary>从原版迁移 AI 服务配置(可选)</summary>
+
+```bash
+py -3.13 -m scripts.migrate_ai_configs --dry-run   # 预览
+py -3.13 -m scripts.migrate_ai_configs             # 迁移(读 E:\\xiaoshuo 的 sqlite)
+```
+
+也可手动配置:**设置 → AI 服务 → 易好快捷配置**,粘贴 Yihao API Key 一键写入 8 条推荐配置;或用「手动模板」按厂商逐个添加(文本/图片/视频/配音/换脸五类,支持 Base URL、多模型、温度、优先级、连通测试)。
 
 - 数据目录:`data/`(SQLite + 生成的图片/视频/成片)
 - Agent 提示词:`workspace/prompts/*.md`(设置页可在线编辑)
@@ -86,6 +160,8 @@ docs/          分析报告/计划/过程/截图
 Chinese / English / 日本語 / 한국어 / Français / Deutsch / Italiano / Português / Español / Tiếng Việt / Türkçe / العربية / हिन्दी / Bahasa Indonesia / ภาษาไทย
 
 Switching updates both the interface and all AI output (scripts, asset extraction, storyboards, prompts, novels, marketing copy). Languages outside zh/en/ja/ko are enforced via an explicit output-language directive appended to each agent's system prompt.
+
+**Beyond the original**: agent prompts and skills ship in **all 15 languages** here (150 prompt + 165 skill files), and each project can fix its own content language independently of the global setting.
 
 ## Features
 
