@@ -84,9 +84,19 @@ class CharacterFaceSwapDialog(QDialog):
 
         opt = QHBoxLayout()
         self.all_faces = QCheckBox("替换图中所有脸")
+        self.all_faces.setChecked(True)          # 对齐原版:默认全替换
         self.enhance = QCheckBox("人脸增强")
+        self.style_combo = QComboBox()
+        for k, label in (("photorealistic", "写实"), ("cinematic", "电影感"), ("anime", "动漫")):
+            self.style_combo.addItem(label, k)
+        self.style_combo.setCurrentIndex(1)     # 默认 cinematic
+        opt.addWidget(QLabel("风格"))
+        opt.addWidget(self.style_combo)
+        opt.addSpacing(10)
         opt.addWidget(self.all_faces)
         opt.addWidget(self.enhance)
+        self.size_tip = W.muted("")
+        opt.addWidget(self.size_tip)
         opt.addStretch(1)
         self.go_btn = W.primary_btn("▶ " + tr("face_swap"))
         self.go_btn.clicked.connect(self._run)

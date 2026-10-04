@@ -59,7 +59,7 @@ def health(base: str | None = None, config_id: int | None = None) -> tuple[bool,
 
 
 def swap_one(template_path: str | Path, source_path: str | Path,
-             swap_all_faces: bool = False, face_enhance: bool = False,
+             swap_all_faces: bool = True, face_enhance: bool = False,
              source_index: int = 0, base: str | None = None,
              config_id: int | None = None) -> Path:
     """单图换脸:template=被换图,source=脸来源。返回输出图片路径。
@@ -67,12 +67,16 @@ def swap_one(template_path: str | Path, source_path: str | Path,
     config_id/base 可指向本地(127.0.0.1:5678)或远程换脸服务,接口协议一致。
     """
     _base = _resolve_base(config_id, base)
+    # 输出格式按模板扩展名判定(对齐原版:png 保留透明通道,否则 jpg)
+    out_fmt = "png" if str(template_path).lower().endswith(".png") else "jpg"
     payload = {
         "source_url": _to_data_url(source_path),
         "template_url": _to_data_url(template_path),
         "source_index": source_index,
+        "template_index": 0,
         "swap_all_faces": swap_all_faces,
         "face_enhance": face_enhance,
+        "output_format": out_fmt,
     }
     resp = requests.post(f"{_base}/swap", json=payload, timeout=300)
     if resp.status_code != 200:

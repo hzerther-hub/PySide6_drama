@@ -17,7 +17,7 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "MiniMax 官方", "provider": "minimax", "base_url": "https://api.minimaxi.com/v1",
          "models": ["MiniMax-M3", "MiniMax-M2.5", "MiniMax-M2"]},
         {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
-         "models": ["deepseek-v4-pro", "gpt-5.6-terra"]},
+         "models": ["agnes-3.0-flash", "agnes-2.5-pro", "agnes-2.5-flash"]},
     ],
     "image": [
         {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
@@ -30,10 +30,9 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "火山方舟 Doubao Seedream", "provider": "volcengine",
          "base_url": "https://ark.cn-beijing.volces.com/api/v3",
          "models": ["doubao-seedream-5-0-260128"]},
-        {"name": "阿里 qwen-image", "provider": "qwen-image",
-         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "models": ["qwen-image"]},
-        {"name": "本地 InsightFace 人脸融合", "provider": "local-faceswap",
-         "base_url": "http://127.0.0.1:5678", "models": ["inswapper_128"]},
+        {"name": "百炼图像 · Qwen-Image / 万相", "provider": "qwen-image",
+         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
+         "models": ["qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"]},
     ],
     "video": [
         {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
@@ -44,8 +43,10 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
                     "doubao-seedance-2-0-260128"]},
         {"name": "MiniMax 官方", "provider": "minimax", "base_url": "https://api.minimaxi.com/v1",
          "models": ["MiniMax-H3"]},
-        {"name": "阿里云百炼 Wan", "provider": "aliyun", "base_url": "https://dashscope.aliyuncs.com",
-         "models": ["wan3.0-video", "wan3.0-video-prime"]},
+        {"name": "阿里云百炼 · Wan 3.0 / HappyHorse", "provider": "aliyun",
+         "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com",
+         "models": ["wan3.0-video", "wan3.0-video-prime", "happyhorse-1.1-t2v",
+                    "happyhorse-1.1-i2v", "happyhorse-1.1-r2v"]},
         {"name": "RunningHub · Seedance 2.5 / Wan 3.0", "provider": "runninghub",
          "base_url": "https://www.runninghub.cn",
          "models": ["seedance-2.5", "wan3.0-video", "wan3.0-video-prime"]},
@@ -55,13 +56,15 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
     ],
     "tts": [
         {"name": "豆包语音(火山引擎)", "provider": "volcengine",
-         "base_url": "https://openspeech.bytedance.com", "models": ["BV001_streaming"]},
+         "base_url": "https://openspeech.bytedance.com",
+         "models": ["zh_female_shuangkuaisisi_uranus_bigtts",
+                    "zh_male_roucheng_uranus_bigtts", "zh_female_cancan_uranus_bigtts"]},
     ],
     "faceswap": [
-        {"name": "本地 InsightFace (CPU)", "provider": "local-insightface",
-         "base_url": "http://127.0.0.1:5678", "models": ["inswapper_128"]},
-        {"name": "远程换脸服务(自填地址)", "provider": "remote-faceswap",
-         "base_url": "https://your-face-server.example.com", "models": ["inswapper_128"]},
+        {"name": "本地换脸服务 · InsightFace", "provider": "local-faceswap",
+         "base_url": "http://127.0.0.1:5678", "models": ["face-swap"]},
+        {"name": "远程换脸服务 · FaceMe", "provider": "remote-faceswap",
+         "base_url": "https://face.mei.biz", "models": ["face-swap"]},
     ],
 }
 
@@ -70,9 +73,12 @@ SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音
 # 各 provider 的可选模型候选(新建时展示;对齐原版设置页展示)
 MODEL_CHOICES: dict[str, list[str]] = {
     "minimax": ["MiniMax-M3", "MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M2.1", "MiniMax-H3"],
-    "agnes": ["agnes-image-2.5-flash", "agnes-image-2.5", "agnes-image-2.1-flash", "agnes-video-2.5-flash", "agnes-video-2.5"],
+    "agnes": ["agnes-3.0-flash", "agnes-2.5-pro", "agnes-2.5-flash",
+              "agnes-image-2.5-flash", "agnes-image-2.1-flash", "agnes-image-2.0-flash",
+              "agnes-video-2.5-flash", "agnes-video-2.5"],
     "volcengine": ["doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini", "doubao-seedream-4-0"],
-    "aliyun": ["wan3.0-video", "wan3.0-video-prime"],
+    "aliyun": ["wan3.0-video", "wan3.0-video-prime", "happyhorse-1.1-t2v",
+               "happyhorse-1.1-i2v", "happyhorse-1.1-r2v"],
     # 小云雀沉浸式短片 API 的 model 枚举(文档 v1.0.6;非 VIP 账号仅 mini_lite 可用)
     "xiaoyunque": ["Seedance_2.5", "seedance2.0_fast_vision", "seedance2.0_vision", "Seedance_2.0_mini",
                    "MiniMax-H3", "MiniMax-H3-Max", "wan3.0", "happyhorse-1.1", "Seedance_2.0_mini_lite"],
@@ -152,13 +158,15 @@ def apply_yihao_key(api_key: str) -> list[str]:
     Seedance 垫底(工作台按 priority 降序取第一个启用配置)。
     """
     created: list[str] = []
+    FX = "https://api.firemux.com"
     presets = [
-        ("text", "minimax", "https://api.minimaxi.com/v1", "MiniMax-M3", 100),
-        ("image", "agnes", "https://apihub.agnes-ai.com", "agnes-image-2.5-flash", 100),
-        ("video", "minimax", "https://api.minimaxi.com/v1", "MiniMax-H3", 98),
-        ("video", "aliyun", "https://dashscope.aliyuncs.com", "wan3.0-video", 97),
-        ("video", "volcengine", "https://ark.cn-beijing.volces.com/api/v3",
-         "doubao-seedance-2-0-mini-260615", 96),
+        ("text", "gemini", FX, "gemini-3.8-flash", 101),
+        ("text", "openai", FX, "deepseek-v4-pro", 100),
+        ("image", "openai", FX, "gpt-image-2", 99),
+        ("image", "gemini", FX, "gemini-3-pro-image", 97),
+        ("video", "aliyun", FX + "/qwen", "wan3.0-video", 98),
+        ("video", "volcengine", FX + "/volcengine", "doubao-seedance-2-0-mini-260615", 97),
+        ("video", "minimax", FX + "/minimax", "MiniMax-H3", 96),
         ("video", "runninghub", "https://www.runninghub.cn", "seedance-2.5", 95),
     ]
     for st, provider, url, model, prio in presets:
@@ -174,21 +182,22 @@ def apply_yihao_key(api_key: str) -> list[str]:
 
 def seed_tts_default() -> None:
     if not (q_tts := db.q1("SELECT id FROM ai_service_configs WHERE service_type='tts'")):
-        add_config("tts", "volcengine", "https://openspeech.bytedance.com", "BV001_streaming", remark="默认豆包语音")
+        add_config("tts", "volcengine", "https://openspeech.bytedance.com",
+                   "zh_female_shuangkuaisisi_uranus_bigtts", remark="豆包语音")
 
 
 def seed_faceswap_default() -> None:
     """首次启动种子:本地 InsightFace 换脸服务(可再自行添加远程配置)。"""
     if not (row := db.q1("SELECT id FROM ai_service_configs WHERE service_type='faceswap'")):
-        add_config("faceswap", "local-insightface", "http://127.0.0.1:5678",
-                   "inswapper_128", remark="本地 InsightFace", priority=0)
+        add_config("faceswap", "local-faceswap", "http://127.0.0.1:5678",
+                   "face-swap", remark="本地换脸服务", priority=0)
 
 
 # ── 就绪检查(缺失配置/Key 时直接拦下,不让请求白跑) ──
 SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
                 "faceswap": "换脸"}
 # 不需要 API Key 的 provider(本地服务)
-NO_KEY_PROVIDERS = {"local-faceswap", "local-insightface"}
+NO_KEY_PROVIDERS = {"local-faceswap"}
 
 
 class NotConfigured(RuntimeError):

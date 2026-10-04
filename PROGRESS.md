@@ -295,3 +295,23 @@
 - 冒烟:启动台/项目页/工作台六阶段/批量进度面板/审校明细/全书清单/伏笔台账/审校摘要/垃圾清理/批量建集越界 —— **0 错误**。
 - 逻辑单测:阶段判定 5 态全对、LCS 去重 4 例全对、朗读分块(12/600/103)、中断任务收尾(1 completed/2 failed)、垃圾清理 4 条。
 - 截图 63(阶段条+字数)/ 64(小说工具条)/ 65(批量进度)。
+
+## 2026-09-29(第 20 轮:同步原版模型/旁白/换脸)
+> 原版工作区又有新变化,重点是 **模型清单、TTS 旁白、换脸服务** 三块,已全部对齐。
+### 配置文件
+- 重新同步 prompts(150)与 skills(165);`workspace/skills` 现有 **11 个技能目录**(含 `storyboard-breaker/fight-cinematography` 高速打斗运镜手册 15 语言)。
+### 模型(对齐原版 settings.vue providerPresets + yihaoQuickConfigs)
+- **换脸从 image 迁出,独立为第 5 类服务 `faceswap`**:provider 名对齐为 `local-faceswap`(本地 127.0.0.1:5678)与 `remote-faceswap`(远程默认 `https://face.mei.biz`,不再是我之前的占位地址),model 占位 `face-swap`。
+- **TTS 音色换代**:原版注释说明 `BV001/BV002/BV005_streaming` 属 1.0 旧音色、走另一套鉴权、`X-Api-Key` 下不可用 → 全部换成豆包大模型 2.0 音色(`zh_female_shuangkuaisisi_uranus_bigtts` / `zh_male_roucheng_uranus_bigtts` / `zh_female_cancan_uranus_bigtts`)。
+- 补全模型清单:text Agnes 升 3.0 系列、MiniMax 补 M2.7/M2.1;image qwen-image 改百炼地址 + `qwen-image-3.0-pro` / `wan2.7-image(-pro)`;video 阿里补 **HappyHorse 1.1**(t2v/i2v/r2v)。
+- **易好快捷配置改 8 条**(对齐原版):走 firemux 中转(`https://api.firemux.com`,视频按 `/qwen` `/volcengine` `/minimax` 分路径),优先级 Gemini文本101 > OpenAI文本100 > OpenAI图片99 > Wan视频98 > Seedance97 > Gemini图片97 > MiniMax视频96 > RunningHub95。
+### 旁白 TTS(重写 tts_client.py,对齐 volcengine-tts.ts)
+- **双引擎**:Path A `seed-tts-2.0`(异步 submit/query,Resource-Id 区分单角色 `seed-tts-2.0` 与复刻音色 `seed-icl-2.0`(voice 以 `S_` 开头));Path B `seed-audio-1.0`(同步 create 返回 base64)。错误含 `resource not granted` → 缓存降级、后续直接走兜底。
+- **语速自适应(核心)**:按 `target_duration` 合成后 ffprobe 实测时长,超了就提速重合成(最多 2 轮,上限 2.0x,旧文件清理)。
+- **探活改真实请求**:发 2 字最小合成(`seed-tts-2.0-standard`),因为 submit 空体会回 500 导致"永远测试不通过"。
+### 换脸
+- 客户端补 `output_format`(模板是 .png 则输出 png 保留透明,否则 jpg)与 `template_index`;`swap_all_faces` 默认改 true(对齐原版硬编码)。
+- 换脸面板加 **风格下拉**(写实/电影感/动漫,对齐原版三项 prompt 前缀)、"替换图中所有脸"默认勾选、"人脸增强";保留批量换脸/批量下载/恢复原貌/应用替换。
+### 验证
+- 冒烟 9 项全过 0 错误;TTS 降级判定、音色路由(单角色 vs 复刻)、provider 清单、换脸面板、设置页全部正常。
+- 截图 26(换脸面板)/ 27(设置·换脸标签)。
