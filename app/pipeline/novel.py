@@ -84,11 +84,35 @@ def _save_with_title(episode_id: int, content: str) -> str:
     return text
 
 
-def write_chapter_with_review(episode_id: int, config_id: int | None = None) -> dict:
-    """写章 → 六维审校 → 有问题带清单重写一轮(对齐原版 batch 修复循环)。"""
-    content = write_chapter(episode_id, config_id=config_id)
+def write_chapter_with_review(episode_id: int, config_id: int | None = None,
+                              task_id: int | None = None,
+                              lang: str | None = None) -> dict:
+    """写章 → 写后校验 → 六维审校 → 有问题带清单重写一轮。
+
+    对齐原版(101759d + 未提交批次):
+    - 写后校验:以 episodes.content 为准,`len < 200` 视为模型没真写入 →
+      抛错让上层重试一次,避免"界面显示完成但章节空着,极难排查"。
+    - 阶段标记:writing → reviewing → repairing 写进 sys_task.params.stage,
+      批量面板据此显示"当前在做什么"(正文生成要几十秒,只有阶段可见才不像卡死)。
+    """
+    from ..core import taskmgr as TM
+    MIN_CHARS = 200
+
+    def _stage(s: str):
+        if task_id:
+            TM.set_stage(task_id, s)
+
+    _stage("writing")
+    write_chapter(episode_id, config_id=config_id, lang=lang)
+    row = db.q1("SELECT content, episode_number FROM episodes WHERE id=?", (episode_id,))
+    content = (row["content"] if row else "") or ""
+    if len(content.strip()) < MIN_CHARS:
+        num = row["episode_number"] if row else "?"
+        raise RuntimeError(f"第 {num} 集未写入正文(仅 {len(content.strip())} 字符),请重新生成")
+
+    _stage("reviewing")
     try:
-        review = review_chapter(episode_id, config_id=config_id)
+        review = review_chapter(episode_id, config_id=config_id, lang=lang)
     except Exception:  # noqa: BLE001
         return {"content": content, "review": None, "fixed": False}
     if isinstance(review, dict) and review.get("overall") == "fix":
@@ -97,9 +121,10 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None) -> 
             if isinstance(v, dict) and not v.get("pass", True):
                 issues.append(f"[{dim}] " + "; ".join(v.get("issues", [])[:3]))
         if issues:
-            fix_prompt = "审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8]) \
-                         + f"\n\n原正文:\n{content[:14000]}"
-            fixed = runner.run_agent("novel_editor", fix_prompt, config_id=config_id)
+            _stage("repairing")
+            fix_prompt = ("审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8])
+                          + f"\n\n原正文:\n{content[:14000]}")
+            fixed = runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id)
             db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
             return {"content": fixed, "review": review, "fixed": True}
     return {"content": content, "review": review, "fixed": False}
@@ -389,3 +414,254 @@ def missing_steps_text(drama_id: int) -> str:
     if not missing:
         return ""
     return "、".join(f"{s}({STEP_NAMES.get(s, '')})" for s in missing)
+
+
+# ── 批量建集(对齐原版 POST /episodes/bulk) ──
+BULK_MAX = 999
+RESOLUTIONS = ("480p", "720p", "1080p")
+
+
+def bulk_create_episodes(drama_id: int, titles: list[str] | None = None, count: int | None = None,
+                         target_words: int | None = None, resolution: str = "720p") -> dict:
+    """一次插入批量建集(999 章量级下逐个建集会上千次串行请求)。
+
+    titles 优先(按清单顺序),缺名补「第N集」;count 缺省取 len(titles);
+    start_num = 已有最大集号 + 1。返回 {created, start_number, total, episodes}。
+    """
+    if not (1 <= int(count or len(titles or [])) <= BULK_MAX):
+        raise RuntimeError(f"集数需在 1-{BULK_MAX} 之间")
+    resolution = resolution if resolution in RESOLUTIONS else "720p"
+    n = int(count if count is not None else len(titles or []))
+    names = list(titles or [])
+    start = (db.q1("SELECT MAX(episode_number) m FROM episodes WHERE drama_id=?", (drama_id,))["m"] or 0) + 1
+    ts = db.now()
+    words = int(target_words) if target_words and int(target_words) > 0 else None
+    created = []
+    for i in range(n):
+        num = start + i
+        title = (names[i].strip() if i < len(names) and names[i] else "") or f"第{num}集"
+        eid = db.ex("""INSERT INTO episodes(drama_id,episode_number,title,status,resolution,target_words,created_at,updated_at)
+                      VALUES(?,?,?,'pending',?,?,?,?)""",
+                    (drama_id, num, title, resolution, words, ts, ts))
+        created.append({"id": eid, "episode_number": num, "title": title})
+    total = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]
+    return {"created": len(created), "start_number": start, "total": total, "episodes": created}
+
+
+def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = False,
+                         config_id: int | None = None, lang: str | None = None,
+                         on_progress=None) -> dict:
+    """批量写章(顺序严格按传入的 episode_ids,防标题写进A章正文写进B章)。
+
+    对齐原版未提交批次:默认**已有正文的章节整批拒绝**(需 force=True 才放行),
+    防止误覆盖已完成内容。
+    """
+    rows = [r for r in (db.q1(f"SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
+                        for i in episode_ids)]
+    rows = [r for r in rows if r]
+    if not rows:
+        return {"total": 0, "ok": 0, "failed": 0}
+    if not force:
+        dup = [r["episode_number"] for r in rows if len((r["content"] or "").strip()) >= 200]
+        if dup:
+            raise RuntimeError(
+                f"第 {'、'.join(map(str, dup))} 章已有正文,已跳过。重写请在批量面板点「重写已完成章节」。")
+    ok = failed = 0
+    for r in rows:
+        try:
+            write_chapter_with_review(r["id"], config_id=config_id, lang=lang)
+            ok += 1
+        except Exception:  # noqa: BLE001
+            failed += 1
+        if on_progress:
+            on_progress(ok + failed, len(rows), r["episode_number"])
+    return {"total": len(rows), "ok": ok, "failed": failed}
+
+
+# ── 伏笔台账(对齐原版未提交批次: LCS 去重 + 封顶 + 可交互 toggle) ──
+FORESHADOW_DEDUP_MIN_LCS = 5
+OPEN_LEDGER_CAP = 40
+LEDGER_INJECT_LIMIT = 8
+
+
+def _normalize_foreshadow(s) -> str:
+    """伏笔归一:去空白与中文标点,便于比较语义重合度。"""
+    import re as _re
+    return _re.sub(r"[\s　，。、；：？！「」『』\"'‘’（）()·…—\-]", "", str(s or ""))
+
+
+def _lcs_len(a: str, b: str) -> int:
+    """最长公共子串长度(DP)。伏笔多为「人物+行为」的改写句,bigram 区分度差,
+    但核心短语会原样保留(如「苏晓晴对李安全变化的」稳定命中 10 字)。"""
+    if not a or not b:
+        return 0
+    prev = [0] * (len(b) + 1)
+    best = 0
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        ai = a[i - 1]
+        for j in range(1, len(b) + 1):
+            if ai == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+def dedup_ledger(items: list[dict]) -> list[dict]:
+    """判同规则:完全相同 || 互相包含 || LCS >= 5。"""
+    out: list[dict] = []
+    for it in items:
+        txt = _normalize_foreshadow(it.get("text"))
+        if not txt:
+            continue
+        dup = False
+        for o in out:
+            ot = _normalize_foreshadow(o.get("text"))
+            if not ot:
+                continue
+            if ot == txt or ot in txt or txt in ot or _lcs_len(ot, txt) >= FORESHADOW_DEDUP_MIN_LCS:
+                dup = True
+                break
+        if not dup:
+            out.append(it)
+    return out
+
+
+def cap_ledger(items: list[dict]) -> list[dict]:
+    """未回收且非 stale 超 40 条时,把最老的标 stale(不删除,界面仍可查)。"""
+    opens = [it for it in items if not it.get("closed") and not it.get("stale")]
+    if len(opens) > OPEN_LEDGER_CAP:
+        for it in opens[: len(opens) - OPEN_LEDGER_CAP]:
+            it["stale"] = True
+    return items
+
+
+def backfill_ledger_chapters(drama_id: int, items: list[dict]) -> list[dict]:
+    """给历史伏笔补 open_chapter:归一文本前 4 字在该章正文中首次命中即取,找不到留空不臆造。"""
+    for it in items:
+        if it.get("open_chapter"):
+            continue
+        key = _normalize_foreshadow(it.get("text"))[:4]
+        if len(key) < 4:
+            continue
+        for r in db.q("SELECT episode_number, content FROM episodes WHERE drama_id=? ORDER BY episode_number",
+                      (drama_id,)):
+            if key in _normalize_foreshadow(r["content"]):
+                it["open_chapter"] = r["episode_number"]
+                break
+    return items
+
+
+def get_ledger(drama_id: int) -> dict:
+    """伏笔台账:未回收在前。index 为原始数组下标(toggle 依赖它定位)。"""
+    d = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload(d["novel_meta"], {}) if d else {}
+    raw = meta.get("ledger") or []
+    items = []
+    for i, it in enumerate(raw):
+        if not (it or {}).get("text"):
+            continue
+        items.append({**it, "index": i})
+    items.sort(key=lambda x: bool(x.get("closed")))
+    return {"items": items, "open": sum(1 for i in items if not i.get("closed"))}
+
+
+def toggle_ledger(drama_id: int, index: int, chapter: int | None = None) -> dict:
+    """切换某条伏笔的回收状态(乐观更新的服务端半边)。"""
+    d = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload(d["novel_meta"], {}) if d else {}
+    ledger = meta.get("ledger") or []
+    if not (0 <= int(index) < len(ledger)):
+        raise RuntimeError("伏笔下标越界")
+    item = ledger[index]
+    item["closed"] = not item.get("closed")
+    if item["closed"]:
+        item["closed_chapter"] = chapter
+        item.pop("stale", None)
+    else:
+        item.pop("closed_chapter", None)
+    meta["ledger"] = cap_ledger(ledger)
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+    return get_ledger(drama_id)
+
+
+def inject_recent_ledger(items: list[dict], limit: int = LEDGER_INJECT_LIMIT) -> list[dict]:
+    """写作时注入的伏笔:按埋设章号倒序取最近 N 条(早期伏笔不再霸占前排)。"""
+    opens = [it for it in items if not it.get("closed") and (it.get("text") or "").strip()]
+    indexed = list(enumerate(opens))
+    indexed.sort(key=lambda p: (-(p[1].get("open_chapter") or 0), -p[0]))
+    return [it for _, it in indexed[:limit]]
+
+
+# ── 审校摘要(对齐原版 GET /novel/review-summary) ──
+def review_summary(drama_id: int) -> dict:
+    """列出全书仍有审校问题的章节。"""
+    items, total = [], 0
+    for ep in db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (drama_id,)):
+        rj = db.jload(ep["review_json"], {}) or {}
+        issues = rj.get("issues") or []
+        if not issues:
+            continue
+        def _txt(x):
+            if isinstance(x, str):
+                return x
+            return str(x.get("description") or x.get("issue") or x)
+        items.append({"episode_id": ep["id"], "episode_number": ep["episode_number"],
+                      "title": ep["title"], "count": len(issues),
+                      "issues": [_txt(x) for x in issues[:20]],
+                      "reviewed_at": ep["updated_at"]})
+        total += len(issues)
+    return {"items": items, "total": len(items), "issues": total}
+
+
+# ── 整章朗读(对齐原版 POST /novel/read-aloud) ──
+def split_for_tts(text: str, limit: int = 600) -> list[str]:
+    """按句切分(单句超限硬切),避免整章一次提交超长。"""
+    import re as _re
+    parts = _re.split(r"([^。！？!?…；;]+[。！？!?…；;]*\.?)", text or "")
+    chunks, cur = [], ""
+    for seg in parts:
+        if not seg:
+            continue
+        while len(seg) > limit:                     # 超长单句硬切
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(seg[:limit])
+            seg = seg[limit:]
+        if len(cur) + len(seg) > limit:
+            chunks.append(cur)
+            cur = seg
+        else:
+            cur += seg
+    if cur.strip():
+        chunks.append(cur)
+    return [c for c in chunks if c.strip()]
+
+
+def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
+    """整章正文合成 MP3 供播放(MP3 帧自包含,顺序拼接可连续播放)。"""
+    import uuid as _uuid
+    from ..ai import tts_client
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("章节不存在")
+    import re as _re
+    text = _re.sub(r"^#\s+.*$", "", ep["content"] or "", count=1, flags=__import__("re").M)
+    text = text.strip()
+    if len(text) < 50:
+        raise RuntimeError("本章正文太短,无法朗读")
+    chunks = split_for_tts(text, 600)
+    out_dir = config.STATIC_DIR / "narration" / "novel-read"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for i, c in enumerate(chunks):
+        p = tts_client.synthesize(c, config_id=config_id)
+        parts.append(p.read_bytes())
+        p.unlink(missing_ok=True)
+    out = out_dir / f"ep-{episode_id}-{_uuid.uuid4().hex[:8]}.mp3"
+    out.write_bytes(b"".join(parts))
+    return {"audio_url": config.path_to_media_url(out), "chunks": len(chunks)}

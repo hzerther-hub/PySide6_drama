@@ -365,8 +365,8 @@ def init_db() -> None:
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('ui_language','zh',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('theme','light',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('tours_seen','0',?)", (now(),))
-    # 恢复中断任务
-    db.execute("UPDATE sys_task SET status='failed', error_msg='interrupted by restart', updated_at=? WHERE status='processing'", (now(),))
+    # 恢复中断任务(对齐原版):按"产出是否已落"归位,而不是一律标 failed
+    settle_interrupted_tasks(db, now())
     db.commit()
     _seed_sample_project()
 
@@ -473,3 +473,26 @@ def jload(text: str | None, default=None):
         return json.loads(text)
     except Exception:
         return default
+
+
+def settle_interrupted_tasks(conn, ts: str) -> tuple[int, int, int]:
+    """启动时收尾 processing 任务:有产出 → completed(只是收尾没跑完),否则 failed。"""
+    rows = conn.execute(
+        "SELECT id, type, episode_id, local_path, result_url FROM sys_task WHERE status='processing'"
+    ).fetchall()
+    done = failed = 0
+    for r in rows:
+        has_output = bool(r["local_path"])
+        if not has_output and r["type"] in ("novel", "novel_batch") and r["episode_id"]:
+            ep = conn.execute("SELECT content FROM episodes WHERE id=?", (r["episode_id"],)).fetchone()
+            has_output = bool(ep and (ep["content"] or "").strip())
+        if has_output:
+            conn.execute("UPDATE sys_task SET status='completed', updated_at=? WHERE id=?", (ts, r["id"]))
+            done += 1
+        else:
+            conn.execute("UPDATE sys_task SET status='failed', error_msg=?, updated_at=? WHERE id=?",
+                         ("服务重启，生成任务中断，请重试", ts, r["id"]))
+            failed += 1
+    if rows:
+        print(f"[init] 已收尾 {len(rows)} 个中断任务(已完成 {done} / 失败 {failed})")
+    return len(rows), done, failed

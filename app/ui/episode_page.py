@@ -28,7 +28,7 @@ from ..pipeline import rewriter
 from ..pipeline import storyboard as sb_pipe
 from ..pipeline import stitch as stitch_pipe
 from . import widgets as W
-from .toast import err, ok, warn
+from .toast import err, info, ok, warn
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -136,6 +136,8 @@ class EpisodePage(QWidget):
         root.addWidget(body, 1)
         TASKMGR.updated.connect(self._refresh_status)
         self._loading = False
+        self._sb_split_running = False
+        self._sb_split_task = 0
 
     # ── 数据加载 ──
     def load(self, drama_id: int, episode_id: int):
@@ -331,7 +333,15 @@ class EpisodePage(QWidget):
         edit_btn = QPushButton("✏ 改稿")
         edit_btn.clicked.connect(self._edit_chapter)
         bar2.addWidget(plan_btn)
+        self.review_btn = review_btn
+        review_btn.setToolTip("六维审校(连贯性/人设/设定/物件/文风/节奏)·点击查看问题明细")
+        self.summary_btn = QPushButton("≡ 全书审校清单")
+        self.summary_btn.clicked.connect(self._open_review_summary)
+        read_btn = QPushButton("🔊 朗读本章")
+        read_btn.clicked.connect(self._read_aloud)
         bar2.addWidget(review_btn)
+        bar2.addWidget(self.summary_btn)
+        bar2.addWidget(read_btn)
         bar2.addWidget(self.edit_instr, 1)
         bar2.addWidget(edit_btn)
         lay.addLayout(bar2)
@@ -416,55 +426,142 @@ class EpisodePage(QWidget):
         TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _batch_novel(self):
-        hint = self._novel_redline_hint()
-        if hint:
-            warn(hint)
+        """批量写本章及后续(对齐原版未提交批次的语义重定义 + 进度条 + 阶段)。"""
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("text", self._cfg_for("text")):
             return
         self._save_raw_silent()
-        n = db.q1("SELECT MAX(episode_number) m FROM episodes WHERE drama_id=?", (self.drama_id,))["m"] or 0
-        want, ok = QInputDialog_getInt(self, tr("batch_write"), "N =", 3, 1, 20)
-        if not ok:
+        all_eps = [dict(r) for r in db.q(
+            "SELECT * FROM episodes WHERE drama_id=? AND episode_number>=? ORDER BY episode_number",
+            (self.drama_id, self._ep["episode_number"]))]
+        cur = self._ep
+        # 情形一:本章未写完(空 或 低于目标 80%)→ 确认后只重写本章
+        body_len = len((cur["content"] or "").strip())
+        target = cur["target_words"] or 3000
+        if body_len < int(target * 0.8):
+            if QMessageBox.question(
+                    self, tr("batch_write"),
+                    f"第 {cur['episode_number']} 章"
+                    + (f"现有 {body_len} 字,未达目标 {target} 字" if body_len else f"尚未写作(目标 {target} 字)")
+                    + ",将重新生成。已有内容会被覆盖且无法撤销。确定继续?",
+                    QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+                self._run_batch([cur["id"]], force=True)
             return
+        # 情形二:本章已完成 → 取后续中「无正文」的前 10 章
+        pending = [e for e in all_eps if e["episode_number"] > cur["episode_number"]
+                   and len((e["content"] or "").strip()) < 200]
+        if not pending:
+            warn("后续章节都已有正文,没有待写内容")
+            return
+        self._run_batch([e["id"] for e in pending[:10]], force=False)
+
+    def _run_batch(self, episode_ids: list[int], force: bool):
+        """执行批量写章:三段式进度条 + 阶段显示 + 完成后提示。"""
         from ..pipeline import novel as novel_pipe
-        ts = db.now()
-        ids = []
-        for i in range(want):
-            n += 1
-            ids.append(db.ex("INSERT INTO episodes(drama_id,episode_number,title,status,resolution,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-                             (self.drama_id, n, tr("episode_n").format(n), "pending", "720p", ts, ts)))
+        self._batch_ids = list(episode_ids)
+        self._batch_done = 0
+        self._batch_ok = 0
+        self._batch_failed = 0
+        self._batch_stage = ""
+        self._batch_dialog = _BatchProgressDialog(self, len(episode_ids), self)
+        self._batch_dialog.show()
+        self._batch_start_ts = 0
         def job(tid):
-            outs = []
-            for eid in ids:
-                outs.append(novel_pipe.write_chapter_with_review(eid, config_id=self.text_model.currentData()))
-            return outs
+            from ..core import taskmgr as TM
+            self._batch_start_ts = 1
+            def on_progress(done, total, num):
+                self._batch_done = done
+                from PySide6.QtCore import QMetaObject, Qt as _Qt
+                def _ui():
+                    if self._batch_dialog:
+                        self._batch_dialog.update_progress(done, total)
+                QMetaObject.invokeMethod(self, "_noop", _Qt.QueuedConnection)
+            return novel_pipe.batch_write_chapters(
+                self.drama_id, episode_ids, force=force,
+                config_id=self.text_model.currentData(),
+                lang=getattr(self, "_drama_lang", None),
+                on_progress=on_progress)
         def done(tid, result, error):
+            r = result or {}
             if error:
-                err("AI")
-            else:
-                fixed = sum(1 for r in (result or []) if r and r.get("fixed"))
-                QMessageBox.information(self, tr("batch_write"),
-                                        f"完成 {len(result or [])} 章,其中 {fixed} 章经审校自动修复")
-        TASKMGR.submit("novel_batch", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
-
-
-    def _chapter_name_missing(self) -> bool:
-        """标题为空或只有「第N集」= 缺章节名(对齐原版 chapterNameMissing)。"""
-        t = (self._ep["title"] or "").strip()
-        return (not t) or bool(__import__("re").match(r"^第\d+集\s*$", t))
-
-    def _gen_chapter_title(self):
-        from ..pipeline import novel as novel_pipe
-        self._save_raw_silent()
-        def job(tid):
-            return novel_pipe.gen_chapter_title(self.episode_id, config_id=self.text_model.currentData())
-        def done(tid, result, error):
-            if error:
-                err(e_)
-                return
-            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+                r.setdefault("failed", len(episode_ids))
+            self._batch_ok = r.get("ok", 0)
+            self._batch_failed = r.get("failed", 0)
+            if self._batch_dialog:
+                self._batch_dialog.finish(self._batch_ok, self._batch_failed)
+            if r.get("ok"):
+                ok(f"批量完成:{r['ok']} 章成功"
+                   + (f",{r['failed']} 章失败" if r.get("failed") else ""))
             self._reload_raw()
-            ok("章节名已写入:" + str(result))
-        TASKMGR.submit("novel_title", job, done, episode_id=self.episode_id)
+        TASKMGR.submit("novel_batch", job, done, drama_id=self.drama_id, episode_id=self.episode_id)
+
+    def _rewrite_done_chapters(self):
+        """重写已完成章节(force=True 显式放行覆盖)。"""
+        eps = [dict(r) for r in db.q(
+            "SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
+            if len((r["content"] or "").strip()) >= 200]
+        if not eps:
+            return
+        if QMessageBox.question(
+                self, tr("batch_write"),
+                f"将重新生成这 {len(eps)} 章,已有正文会被覆盖且无法撤销。确定继续?",
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._run_batch([e["id"] for e in eps], force=True)
+
+    def _chapter_running_stage(self, ep_id: int) -> str:
+        """该集当前生成阶段(来自 sys_task.params.stage)。"""
+        from ..core import taskmgr as TM
+        row = db.q1("""SELECT id FROM sys_task WHERE episode_id=? AND status='processing'
+                      ORDER BY id DESC LIMIT 1""", (ep_id,))
+        return TM.get_stage(row["id"]) if row else ""
+
+    def _review_issues(self) -> list:
+        rj = db.jload(self._ep["review_json"], {}) or {}
+        issues = rj.get("issues") or []
+        for dim, v in (rj.get("dimensions") or {}).items():
+            if isinstance(v, dict) and not v.get("pass", True):
+                for s in (v.get("issues") or []):
+                    issues.append(f"[{dim}] {s}")
+        return issues
+
+    def _show_review_detail(self):
+        from .batch_dialogs import ReviewPanelDialog
+        issues = self._review_issues()
+        if not issues:
+            info("本章没有未处理的审校问题")
+            return
+        ReviewPanelDialog(self, issues, self._ep["episode_number"], self._ep["title"] or "").exec()
+
+    def _open_review_summary(self):
+        from ..pipeline import novel as N
+        from .batch_dialogs import ReviewSummaryDialog
+        data = N.review_summary(self.drama_id)
+        ReviewSummaryDialog(self, data, on_goto=self._goto_episode_by_id).exec()
+
+    def _goto_episode_by_id(self, episode_id: int):
+        ep = db.q1("SELECT drama_id, episode_number FROM episodes WHERE id=?", (episode_id,))
+        if ep and ep["drama_id"] == self.drama_id:
+            self.load(self.drama_id, episode_id)
+            self._goto_step("raw")
+
+    def _read_aloud(self):
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("tts", None):
+            return
+        from ..pipeline import novel as N
+        def job(tid):
+            return N.read_aloud(self.episode_id)
+        def done(tid, result, error):
+            if error:
+                err(error); return
+            import os
+            from ..core import config
+            p = config.media_url_to_path(result["audio_url"])
+            if p.exists():
+                os.startfile(str(p))
+            ok(f"已合成朗读音频({result['chunks']} 段)")
+        TASKMGR.submit("tts", job, done, episode_id=self.episode_id)
 
     def _open_plan(self):
         from .novel_dialogs import NovelPlanDialog
@@ -993,14 +1090,43 @@ class EpisodePage(QWidget):
         TASKMGR.submit("sb_repair", job, done, episode_id=self.episode_id)
 
     def _split_sb(self):
-        def job(tid):
-            return sb_pipe.split_storyboards(self.episode_id, self._drama["aspect_ratio"],
-                                             config_id=self.text_model.currentData(), lang=self._drama_lang)
-        def done(tid, result, error):
-            if error:
-                err("AI")
-            self._reload_storyboard()
-        TASKMGR.submit("storyboard", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+        """重新拆分分镜(改后台任务 + 轮询,对齐原版 split-async)。"""
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("text", self._cfg_for("text")):
+            return
+        if self._sb_split_running:
+            return
+        try:
+            tid = sb_pipe.split_storyboards_bg(
+                self.episode_id, self._drama["aspect_ratio"],
+                config_id=self.text_model.currentData(),
+                lang=getattr(self, "_drama_lang", None))
+        except Exception as e:  # noqa: BLE001
+            err(str(e)[:200]); return
+        self._sb_split_running = True
+        self._sb_split_task = tid
+        info("分镜拆解已开始(后台运行,约 5-10 分钟)")
+        self._poll_sb_split(tid, 0)
+
+    def _poll_sb_split(self, tid: int, attempt: int):
+        """每 6 秒轮询拆分任务(对齐原版 6000ms)。"""
+        from PySide6.QtCore import QTimer
+        if attempt > 200:            # 约 20 分钟兜底
+            self._sb_split_running = False
+            warn("分镜拆分超时,请到任务面板查看"); return
+        def tick():
+            row = db.q1("SELECT status, local_path, error_msg FROM sys_task WHERE id=?", (tid,))
+            st = row["status"] if row else "failed"
+            if st == "processing":
+                QTimer.singleShot(6000, lambda: self._poll_sb_split(tid, attempt + 1))
+                return
+            self._sb_split_running = False
+            if st == "completed":
+                self._reload_storyboard()
+                ok(row["local_path"] or "分镜拆分完成")
+            else:
+                err(row["error_msg"] or "分镜拆分失败")
+        QTimer.singleShot(6000, tick)
 
     def _batch_vp(self):
         def job(tid):

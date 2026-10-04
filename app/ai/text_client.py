@@ -2,9 +2,15 @@
 """文本模型客户端:OpenAI 兼容 chat completions(覆盖 OpenAI/MiniMax/DeepSeek/Gemini-OpenAI 端点)。"""
 from __future__ import annotations
 
+import os
+
 import requests
 
 from . import registry
+
+# LLM 挂起超时(对齐原版 AI_LLM_TIMEOUT_MS,默认 5 分钟):
+# 服务商偶发"接受连接但永不响应",没有超时会让任务永远卡在 processing。
+AI_LLM_TIMEOUT_S = int(int(os.environ.get("AI_LLM_TIMEOUT_MS", 300_000)) / 1000)
 
 
 class AIError(RuntimeError):

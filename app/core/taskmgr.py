@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import traceback
 from collections.abc import Callable
 
@@ -24,6 +25,40 @@ def create_task(task_type: str, **links) -> int:
     keys = ",".join(cols)
     marks = ",".join("?" * len(cols))
     return db.ex(f"INSERT INTO sys_task({keys}) VALUES({marks})", tuple(cols.values()))
+
+
+def set_stage(task_id: int, stage: str) -> None:
+    """写任务阶段标记到 sys_task.params.stage(不改表结构,批量面板据此显示"当前在做什么")。
+
+    阶段:writing 正文生成 / reviewing 审校 / repairing 问题修复 / compressing 卷段压缩。
+    失败只记日志,不阻断主流程。
+    """
+    try:
+        row = db.q1("SELECT params FROM sys_task WHERE id=?", (task_id,))
+        params = jload_safe(row["params"] if row else None)
+        params["stage"] = stage
+        db.ex("UPDATE sys_task SET params=?, updated_at=? WHERE id=?",
+              (json.dumps(params, ensure_ascii=False), db_now(), task_id))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def get_stage(task_id: int) -> str:
+    row = db.q1("SELECT params FROM sys_task WHERE id=?", (task_id,))
+    return (jload_safe(row["params"] if row else None)).get("stage", "")
+
+
+def jload_safe(raw):
+    try:
+        v = json.loads(raw or "{}")
+        return v if isinstance(v, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def db_now() -> str:
+    from . import db as _db
+    return _db.now()
 
 
 def finish_task(task_id: int, status: str, error: str | None = None,

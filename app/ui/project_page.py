@@ -16,6 +16,25 @@ from . import widgets as W
 from .toast import err, ok
 from .cover_dialog import CoverPanel, EpisodeCoverButton
 
+EP_STAGES = ["novel", "script", "assets", "storyboard", "video"]
+EP_STAGE_CN = {"novel": "正文", "script": "剧本", "assets": "资产",
+               "storyboard": "分镜", "video": "成片"}
+
+
+def ep_stage_index(ep: dict) -> int:
+    """按产物判定制作阶段(不依赖手工状态字段,对齐原版 detail.vue)。"""
+    if len((ep.get("content") or "").strip()) < 200:
+        return 0
+    if len((ep.get("script_content") or "").strip()) < 100:
+        return 1
+    n = int(ep.get("storyboard_count") or 0)
+    if n <= 0:
+        return 2
+    if not (ep.get("video_url") or ""):
+        return 3
+    return 4
+
+
 STATUS_META = {
     "pending": ("待开始", "#86909c"),
     "active": ("进行中", "#4b6ef5"),
@@ -89,6 +108,36 @@ class EpisodeCard(QFrame):
         if ep["video_url"]:
             chips.addWidget(W.tag(tr("merged_tag")))
         mid.addLayout(chips)
+        # 制作阶段条(按产物判定)
+        idx = ep_stage_index(ep)
+        seg_row = QHBoxLayout()
+        seg_row.setSpacing(3)
+        for i, st in enumerate(EP_STAGES):
+            seg = QLabel(EP_STAGE_CN[st])
+            if i < idx:
+                seg.setStyleSheet("background:#d9f2e3;color:#16a34a;border-radius:3px;padding:1px 5px;font-size:10px;")
+            elif i == idx:
+                seg.setStyleSheet("background:#4b6ef5;color:#fff;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700;")
+            else:
+                seg.setStyleSheet("background:#f0f1f4;color:#c0c6cf;border-radius:3px;padding:1px 5px;font-size:10px;")
+            seg_row.addWidget(seg)
+        seg_row.addStretch(1)
+        mid.addLayout(seg_row)
+        # 字数进度
+        wc = len((ep.get("content") or "").strip())
+        tw = ep.get("target_words") or 0
+        if wc:
+            warn_cls = wc < int(tw * 0.8) if tw else False
+            wl = QLabel(f"{wc} / {tw} 字" if tw else f"{wc} 字")
+            wl.setObjectName("muted")
+            if warn_cls:
+                wl.setStyleSheet("color:#d97706;font-weight:600;")
+            mid.addWidget(wl)
+        else:
+            wl = QLabel("未写")
+            wl.setObjectName("muted")
+            mid.addWidget(wl)
+        mid.addStretch(1)
         # 分辨率菜单
         self.res_btn = QPushButton(ep["resolution"] or "720p")
         self.res_btn.setFixedWidth(66)
@@ -510,8 +559,12 @@ class ProjectPage(QWidget):
             if w:
                 w.deleteLater()
         rows = db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
+        counts = {r["episode_id"]: r["c"] for r in db.q(
+            "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
         for ep in rows:
-            card = EpisodeCard(dict(ep), on_changed=self.reload)
+            d = dict(ep)
+            d["storyboard_count"] = counts.get(ep["id"], 0)
+            card = EpisodeCard(d, on_changed=self.reload)
             card.enter.connect(self._on_enter)
             card._reload_needed.connect(self.reload)
             self.ep_lay.addWidget(card)

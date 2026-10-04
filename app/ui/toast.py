@@ -176,6 +176,10 @@ def ok(text: str):
     return ToastManager.success(text)
 
 
+def info(text: str):
+    return ToastManager.info(text)
+
+
 def warn(text: str):
     return ToastManager.warning(text)
 
