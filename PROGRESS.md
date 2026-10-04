@@ -315,3 +315,17 @@
 ### 验证
 - 冒烟 9 项全过 0 错误;TTS 降级判定、音色路由(单角色 vs 复刻)、provider 清单、换脸面板、设置页全部正常。
 - 截图 26(换脸面板)/ 27(设置·换脸标签)。
+
+## 2026-09-29(第 21 轮:迁移原版 AI 服务配置 + README 功能对照表)
+- 新增 `scripts/migrate_ai_configs.py`:从 `E:\xiaoshuo\data\yihao.sqlite3` 读取原版 10 条 AI 服务配置,
+  字段映射 `name→remark`、JSON 数组 `model→models+model`、`settings` 原样保留(厂商私有开关),
+  支持 `--dry-run` 预览;同(类型,provider,base_url)覆盖更新,否则新增。
+- **迁移结果**:新增 7 条 / 更新 3 条,覆盖 文本(百炼Qwen3.8-Flash P10、MiniMax)、
+  图片(Agnes P10、百炼Qwen-Image 3.0、火山Seedream 5.0)、视频(火山Seedance 2.0 P10、Agnes)、
+  配音(豆包语音 P100,含 `settings.voice_type`)、换脸(本地 P3 / 远程 FaceMe P2),全部带 API Key。
+- **真实连通验证(非仅配置检查)**:
+  - 文本 ✅ 真实 chat/completions 调用通过
+  - 图片 ✅ 真实生图 875KB(Agnes)
+  - 配音 ✅ 真实合成 2.45s / 目标 5s(豆包 seed-tts-2.0,语速自适应生效)
+  - 视频 ✅ 真实生视频 1056KB(火山 Seedance 2.0 mini;注意 3s 不支持,该模型用 5s)
+- README 增补「功能对照表」(原版 Web ↔ PySide6 重写版逐模块对应 + 增量能力)。
