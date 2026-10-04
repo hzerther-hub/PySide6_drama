@@ -14,6 +14,7 @@ from ..core import db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
+from .braille import WaitingButton, BrailleSpinner
 from .toast import err, ok
 
 
@@ -44,6 +45,8 @@ class CoverPanel(QWidget):
         super().__init__()
         self.drama_id = drama_id
         self._on_changed = on_changed
+        self._busy = False
+        self.status = None
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -67,8 +70,9 @@ class CoverPanel(QWidget):
         right = QVBoxLayout()
         self.prompt = QLineEdit()
         self.prompt.setPlaceholderText("封面提示词(留空则按项目标题/简介/画风自动生成)")
-        gen = W.primary_btn("⟳ 生成封面")
+        gen = WaitingButton("⟳ 生成封面", primary=True)
         gen.clicked.connect(self._generate)
+        self.gen_btn = gen
         right.addWidget(self.prompt)
         right.addWidget(gen, 0, Qt.AlignLeft)
         right.addStretch(1)
@@ -77,19 +81,41 @@ class CoverPanel(QWidget):
         self._url = d["thumbnail"] if d else None
 
     def _generate(self):
+        if self._busy:
+            return
+        self._busy = True
+        self.gen_btn.busy("正在生成封面")
+        self.img.setPixmap(W.pixmap_from_media(None, 146, 196))
+        self.status = BrailleSpinner(color="#4b6ef5", size=17)
+        self.status.start("AI 正在绘制封面…")
+        self.gen_btn.layout().addWidget(self.status)
+
         def job(tid):
             from ..pipeline import novel as novel_pipe
             return novel_pipe.generate_cover(self.drama_id, self.prompt.text().strip())
+
         def done(tid, result, error):
+            self._busy = False
+            self.gen_btn.idle()
+            if self.status:
+                self.status.stop()
+                self.gen_btn.layout().removeWidget(self.status)
+                self.status = None
             if error:
-                err(e_)
+                err(error)
                 return
             self._url = result
             self.img.setPixmap(W.pixmap_from_media(result, 146, 196))
             ok("封面已生成")
             if self._on_changed:
                 self._on_changed()
-        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+        tid = TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+        if not tid:
+            self._busy = False
+            self.gen_btn.idle()
+            if self.status:
+                self.status.stop()
 
 
 class EpisodeCoverButton(QPushButton):

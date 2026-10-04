@@ -29,6 +29,7 @@ from ..pipeline import storyboard as sb_pipe
 from ..pipeline import stitch as stitch_pipe
 from . import widgets as W
 from .toast import err, info, ok, warn
+from .braille import WaitingButton
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -657,11 +658,11 @@ class EpisodePage(QWidget):
         re_props.clicked.connect(lambda: self._extract("props"))
         extract_all = W.primary_btn(tr("extract"))
         extract_all.clicked.connect(lambda: self._extract("all"))
-        b_chars = QPushButton(tr("batch_chars"))
+        b_chars = WaitingButton(tr("batch_chars"))
         b_chars.clicked.connect(lambda: self._batch_images("characters"))
-        b_scenes = QPushButton(tr("batch_scenes"))
+        b_scenes = WaitingButton(tr("batch_scenes"))
         b_scenes.clicked.connect(lambda: self._batch_images("scenes"))
-        b_props = QPushButton(tr("batch_props"))
+        b_props = WaitingButton(tr("batch_props"))
         b_props.clicked.connect(lambda: self._batch_images("props"))
         for b in (re_chars, re_scenes, re_props, extract_all, b_chars, b_scenes, b_props):
             bar.addWidget(b)
@@ -915,7 +916,7 @@ class EpisodePage(QWidget):
         split_btn.clicked.connect(self._split_sb)
         prompts_btn = QPushButton(tr("batch_prompts"))
         prompts_btn.clicked.connect(self._batch_vp)
-        video_btn = W.primary_btn(tr("batch_video"))
+        video_btn = WaitingButton(tr("batch_video"), primary=True)
         video_btn.clicked.connect(self._batch_video)
         bar.addWidget(split_btn)
         self.repair_btn = W.primary_btn("⟳ 自动补全 0")
@@ -1161,6 +1162,8 @@ class EpisodePage(QWidget):
             return
         for r in rows:
             self._gen_video_job(r["id"])
+        QTimer.singleShot(1200, lambda: getattr(self, "_video_btn", None) and self._video_btn.idle())
+        self._video_btn = video_btn
 
     def _gen_video_job(self, sb_id: int):
         res = self.res_combo.currentText()

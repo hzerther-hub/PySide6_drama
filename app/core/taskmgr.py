@@ -77,6 +77,28 @@ class TaskSignals(QObject):
     progress = Signal(int, int)       # task_id, percent
     message = Signal(str)
     busy_changed = Signal(bool, str)  # 是否忙, 任务类型(D 类全局 running 态)
+    # 任务完成回调走 Qt 跨线程队列(比 QTimer 可靠,不会因事件循环状态丢失)
+    done_cb = Signal(object, object, object)   # task_id, result, error
+
+
+def on_main(fn):
+    """把 UI 更新调度回主线程(后台线程直接调 Qt 会跨线程报错)。
+
+    异常必须显式暴露,否则 QTimer.singleShot 会把它静默吞掉,表现为"点了没反应"。
+    """
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    def _wrapped():
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+    QTimer.singleShot(0, _wrapped)
 
 
 class _FnTask(QRunnable):
@@ -90,12 +112,12 @@ class _FnTask(QRunnable):
             result = self.fn(self.task_id)
             finish_task(self.task_id, "completed")
             if self.done_cb:
-                self.done_cb(self.task_id, result, None)
+                self.signals.done_cb.emit(self.done_cb, result, None)
         except Exception:  # noqa: BLE001
             err = traceback.format_exc(limit=6)
             finish_task(self.task_id, "failed", err)
             if self.done_cb:
-                self.done_cb(self.task_id, None, err)
+                self.signals.done_cb.emit(self.done_cb, None, err)
         finally:
             self.signals.finished.emit(self.task_id, "done")
             self.signals.busy_changed.emit(active_count() > 0, "")
@@ -110,11 +132,63 @@ class TaskManager(QObject):
         self.pool = QThreadPool.globalInstance()
         self.pool.setMaxThreadCount(6)
         self.signals = TaskSignals()
-        self.signals.finished.connect(self.updated.emit)
+        self.signals.finished.connect(lambda *_: self.updated.emit())
+        self.signals.done_cb.connect(self._run_done_cb)
+        self.signals.finished.connect(lambda *_: self._leave_busy())
 
     @staticmethod
     def active_count() -> int:
         return active_count()
+
+    # ── 全局盲文等待(D 类)──
+    # 任何任务提交/完成都会把当前活动窗口切成盲文等待态,
+    # 避免"点了按钮没反应,不知道在不在跑"。
+    _host: object | None = None
+    _pending: int = 0
+
+    @classmethod
+    def attach_host(cls, window) -> None:
+        """主窗口启动时调用,登记为等待态宿主。"""
+        cls._host = window
+
+    @classmethod
+    def _host_window(cls):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        return app.activeWindow() or app.focusWidget() or cls._host
+
+    _on_main = staticmethod(on_main)
+
+    def _enter_busy(self, task_type: str):
+        TaskManager._pending += 1
+        msg = f"正在{self.LABEL.get(task_type, '处理')}…"
+        on_main(lambda: self._apply_busy(True, msg))
+
+    def _leave_busy(self):
+        TaskManager._pending = max(0, TaskManager._pending - 1)
+        if TaskManager._pending:
+            return
+        on_main(lambda: self._apply_busy(False, ""))
+
+    def _apply_busy(self, on: bool, msg: str):
+        w = TaskManager._host_window()
+        if w is None:
+            return
+        try:
+            w.set_busy(on, msg)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 任务类型 → 中文动作名(等待态文案)
+    LABEL = {
+        "image": "生成图片", "video": "生成视频", "tts": "合成配音", "cover": "生成封面",
+        "script": "改写剧本", "novel": "写小说", "novel_batch": "批量写章节",
+        "novel_edit": "改稿", "novel_title": "起章节名", "review": "审校",
+        "extract": "提取资产", "storyboard": "拆分镜", "sb_repair": "补全分镜",
+        "storyboard_split": "拆分镜", "comic": "生成漫画", "prompt": "生成提示词",
+        "promo": "写宣传文案", "face_swap": "换脸", "face_swap_batch": "批量换脸",
+        "merge": "拼接成片", "stitch": "拼接长图", "episode_cover": "生成章封面",
+    }
 
     # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)
     TYPE_SERVICE = {
@@ -124,6 +198,16 @@ class TaskManager(QObject):
         "cover": "image", "image": "image", "face_swap": "faceswap", "face_swap_batch": "faceswap",
         "video": "video", "tts": "tts",
     }
+
+    def _run_done_cb(self, cb, result, error):
+        """在主线程执行完成回调(信号 queued 连接保证线程安全)。"""
+        tid = None
+        try:
+            tid = db.get_db().execute("SELECT MAX(id) id FROM sys_task").fetchone()["id"]
+        except Exception:  # noqa: BLE001
+            pass
+        if cb:
+            cb(tid, result, error)
 
     def submit(self, task_type: str, fn: Callable[..., object],
                done_cb: Callable | None = None, **links) -> int:
@@ -136,6 +220,7 @@ class TaskManager(QObject):
                     done_cb(0, None, RuntimeError(f"{task_type} 已取消:{svc} 服务未就绪"))
                 return 0
         tid = create_task(task_type, **links)
+        self._enter_busy(task_type)
         self.pool.start(_FnTask(tid, fn, self.signals, done_cb))
         self.signals.busy_changed.emit(True, task_type)
         self.updated.emit()

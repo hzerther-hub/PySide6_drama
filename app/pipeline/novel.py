@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 
 
 def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:

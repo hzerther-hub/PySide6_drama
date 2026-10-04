@@ -74,6 +74,11 @@ class MainWindow(QMainWindow):
         lang_btn = QPushButton("◎ " + tr("lang_short"))
         lang_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
         lang_btn.clicked.connect(self._switch_language)
+        from .braille import BrailleSpinner, BrailleBar
+        self.busy_spin = BrailleSpinner(color="#8b909a", size=16)
+        tlay.addWidget(self.busy_spin)
+        self.busy_bar = BrailleBar(cells=14, parent=top)
+        tlay.addWidget(self.busy_bar)
         tlay.addWidget(theme_btn)
         tlay.addWidget(settings_btn)
         tlay.addWidget(lang_btn)
@@ -107,6 +112,9 @@ class MainWindow(QMainWindow):
         # 全局 toast(D 类)
         from .toast import ToastManager
         ToastManager.attach(central)
+        # 登记为全局等待态宿主(任务开始/结束时自动切换盲文指示)
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.attach_host(self)
 
         # 信号
         self.projects_page.set_new_callback(self._new_project)
@@ -116,6 +124,18 @@ class MainWindow(QMainWindow):
         self.clone_page.back_requested.connect(self._back_to_projects)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
+
+    def set_busy(self, on: bool, message: str = ""):
+        """全局盲文等待态(D 类):任何 AI 任务在跑时顶栏显示点字变化,避免"点了没反应"。"""
+        from .braille import BrailleSpinner
+        if on:
+            self.busy_spin.start(message or "处理中…")
+            self.busy_bar.start()
+            self.status.showMessage(f"⠿ {message or '处理中…'}")
+        else:
+            self.busy_spin.stop()
+            self.busy_bar.stop()
+            self.status.showMessage("")
 
     def retranslate(self):
         """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""
