@@ -19,7 +19,8 @@ class AIError(RuntimeError):
 
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          temperature: float = 0.7, max_tokens: int = 8192,
-         json_mode: bool = False, timeout: int = 300) -> str:
+         json_mode: bool = False, timeout: int = 300,
+         image_urls: list[str] | None = None) -> str:
     cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
@@ -28,7 +29,13 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
-    msgs.append({"role": "user", "content": prompt})
+    if image_urls:
+        # OpenAI 兼容多模态格式(MiniMax-M3 / Gemini-OpenAI 端点均按此收图)
+        parts: list[dict] = [{"type": "text", "text": prompt}]
+        parts += [{"type": "image_url", "image_url": {"url": u}} for u in image_urls]
+        msgs.append({"role": "user", "content": parts})
+    else:
+        msgs.append({"role": "user", "content": prompt})
     body: dict = {"model": cfg["model"], "messages": msgs,
                   "temperature": temperature, "max_tokens": max_tokens}
     # 配置级 Temperature(对齐原版:留空跟随服务默认;填写则强制覆盖,应对强制温度模型)

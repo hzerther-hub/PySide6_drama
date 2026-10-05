@@ -81,8 +81,13 @@ def _duration(video_path: str | Path) -> float:
         return 0.0
 
 
+def _frame_data_url(path: Path) -> str:
+    import base64
+    return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
 def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None = None) -> list[dict]:
-    """第 1 步:看懂原片。抽帧 + 时长 → 文本模型输出分镜表 JSON。
+    """第 1 步:看懂原片。抽帧 + 时长 → 多模态文本模型(如 MiniMax-M3)看图输出分镜表 JSON。
 
     分镜表每镜:{number, start, end, shot(景别), action(人物动作), line(台词/字幕), product_use(产品如何出现), prompt(重拍视频提示词)}
     """
@@ -93,19 +98,22 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         raise RuntimeError("请先导入参考视频")
     frames = extract_frames(ref, count=8)
     dur = _duration(ref)
+    image_urls = [_frame_data_url(f) for f in frames]
     frame_desc = "\n".join(
-        f"第{i}帧(约 {dur * i / (len(frames) + 1):.1f} 秒处): [视觉帧已提取,文件 {f.name}]"
-        for i, f in enumerate(frames, 1))
-    prompt = f"""下面是一条待复刻的带货/种草类视频的结构信息:
+        f"第{i}帧(约 {dur * i / (len(frames) + 1):.1f} 秒处)"
+        for i, _ in enumerate(frames, 1))
+    prompt = f"""下面是一条待复刻的带货/种草类视频,已按时间均匀抽出 {len(frames)} 帧随消息附上(顺序对应):
 总时长: {dur:.1f} 秒
-均匀抽帧:
 {frame_desc}
 {('补充说明: ' + extra_hint) if extra_hint else ''}
 
-请依据镜头语言常识与抽帧节奏,推断该视频的完整分镜表(8 秒上下每镜,共 2-6 镜),
+请逐帧仔细看图,推断该视频的完整分镜表(8 秒上下每镜,共 2-6 镜):
+- 每帧识别:场景、人物与景别(远/全/中/近/特)、人物动作、出现的商品及其使用方式、画面字幕或口播要点
+- 相邻两帧画面差异明显即发生了镜头切换,据此划分镜头边界与起止时间
 每镜输出:number, start, end, shot(景别), action(人物动作描述), line(推测台词/字幕), product_use(产品如何出现), prompt(给文生视频模型的重拍提示词:主体+动作+运镜+光线+氛围,不写人名)。
 以 JSON 输出:{{"storyboards":[...]}}"""
-    data = runner.run_agent_json("storyboard_breaker", prompt, config_id=config_id)
+    data = runner.run_agent_json("storyboard_breaker", prompt, config_id=config_id,
+                                 image_urls=image_urls)
     boards = data.get("storyboards") or (data if isinstance(data, list) else [])
     if not boards:
         raise RuntimeError("分镜表生成失败")

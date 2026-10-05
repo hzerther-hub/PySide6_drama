@@ -37,20 +37,22 @@ def extract_json(text: str) -> dict | list | None:
 
 def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
               json_output: bool = False, temperature: float = 0.7,
-              config_id: int | None = None) -> str:
+              config_id: int | None = None,
+              image_urls: list[str] | None = None) -> str:
     if lang is None:
         lang = db.get_setting("content_language", "zh")
     system = prompts.load_prompt(agent_type, lang)
     return text_client.chat(
         user_prompt, system=system, temperature=temperature,
-        json_mode=json_output, config_id=config_id)
+        json_mode=json_output, config_id=config_id, image_urls=image_urls)
 
 
 def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None,
-                   config_id: int | None = None) -> dict | list:
+                   config_id: int | None = None,
+                   image_urls: list[str] | None = None) -> dict | list:
     """跑 Agent 并解析 JSON;解析失败时抛 RuntimeError(带原始输出片段)。"""
     raw = run_agent(agent_type, user_prompt, lang=lang, json_output=True,
-                    temperature=0.4, config_id=config_id)
+                    temperature=0.4, config_id=config_id, image_urls=image_urls)
     data = extract_json(raw)
     if data is None:
         raise RuntimeError(f"{agent_type} 输出无法解析为 JSON:{raw[:300]}")
