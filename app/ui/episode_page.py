@@ -701,6 +701,10 @@ class EpisodePage(QWidget):
         read_btn = QPushButton("🔊 " + tr("read_aloud"))
         read_btn.clicked.connect(self._read_aloud)
         b2.addWidget(read_btn)
+        self.ledger_btn = WaitingButton("🧾 " + tr("state_ledger"))
+        self.ledger_btn.setToolTip(tr("state_ledger_tip"))
+        self.ledger_btn.clicked.connect(self._update_ledger)
+        b2.addWidget(self.ledger_btn)
         self.edit_instr = QLineEdit()
         self.edit_instr.setPlaceholderText(tr("edit_instr_ph"))
         edit_btn = QPushButton("✏ " + tr("edit_chapter"))
@@ -721,7 +725,7 @@ class EpisodePage(QWidget):
         chip.setFixedSize(26, 26)
         chip.setAlignment(Qt.AlignCenter)
         chip.setStyleSheet(
-            "background:#eef1fe; color:#4b6ef5; border-radius:10px;"
+            "background:#fdf0e6; color:#f97316; border-radius:10px;"
             "font-family:monospace; font-size:10px; font-weight:800;")
         lay.addWidget(chip)
         lab = QLabel(name)
@@ -814,6 +818,36 @@ class EpisodePage(QWidget):
     def _generate_one(self, sb_id: int):
         """单镜生成视频(任务行右侧操作键 / 主行动键)。"""
         self._one_video(sb_id)
+
+    def _update_ledger(self):
+        """手动重跑本章状态台账(提取 → 合并 → Jev 门控);对应参考项目 update-state-ledger。"""
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("text", None):
+            return
+        btn = self.ledger_btn
+        btn.busy(tr("updating_ledger"))
+
+        def job(tid):
+            from ..pipeline import novel as novel_pipe
+            return novel_pipe.update_state_ledger(
+                self.episode_id, config_id=self.text_model.currentData())
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err(error)
+                return
+            jev = (result or {}).get("jev") or {}
+            verdict = jev.get("verdict")
+            n = (result or {}).get("changes", 0)
+            if verdict == "conflict":
+                warn(f"{tr('ledger_conflict')}{int(round((jev.get('conflict') or 0) * 100))}% · {tr('see_review')}")
+            elif verdict == "skipped":
+                info(f"{tr('ledger_ok')} {n} · Jev {tr('skipped')}({jev.get('reason', '')})")
+            else:
+                ok(f"{tr('ledger_ok')} {n}")
+
+        TASKMGR.submit("prompt", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _open_ai_edit(self, editor):
         """Ctrl+L:选中→改写选中;未选中→光标处插入;可勾选整章处理。"""
@@ -2761,12 +2795,17 @@ class EpisodePage(QWidget):
         head2.addWidget(self.merge_btn)
         body.addLayout(head2)
 
-        # 片头设置行(导出页唯一的合并设置)
+        # 片头设置行(导出页唯一的合并设置)。
+        # 两个开关分列而非单一「加入片头」:原版 d262ac1 修的就是「叠加开了但卡片被默认值强开」——
+        # 前端必须把 intro_card / intro_overlay 显式透传,否则服务端默认 true 会盖掉用户选择。
         intro_row = QHBoxLayout()
         intro_row.setSpacing(8)
-        self.intro_check = QCheckBox(tr("add_intro"))
+        self.intro_check = QCheckBox(tr("intro_card_mode"))
         self.intro_check.toggled.connect(self._on_intro_toggle)
         intro_row.addWidget(self.intro_check)
+        self.intro_overlay_check = QCheckBox(tr("intro_overlay_mode"))
+        self.intro_overlay_check.toggled.connect(self._on_intro_toggle)
+        intro_row.addWidget(self.intro_overlay_check)
         self.intro_title = QLineEdit()
         self.intro_title.setMaximumWidth(260)
         self.intro_title.setMaxLength(60)
@@ -2955,7 +2994,7 @@ class EpisodePage(QWidget):
     @staticmethod
     def _paint_shot_card(sid: int, card: QWidget):
         card.setStyleSheet(
-            "QFrame#card{border:2px solid #4b6ef5;}" if getattr(card, "_sel", False)
+            "QFrame#card{border:2px solid #f97316;}" if getattr(card, "_sel", False)
             else "QFrame#card{border:1px solid #e4e7ec;}")
 
     def _toggle_shot(self, sid: int):
@@ -3022,14 +3061,16 @@ class EpisodePage(QWidget):
         if len(ids) < 2:
             QMessageBox.information(self, tr("export_stage"), tr("merge_needs_two"))
             return
-        intro_on = self.intro_check.isChecked()
         intro_title = self.intro_title.text().strip() or None
+        # 显式传两个标志(不给 None),否则服务端 intro_card 默认 true 会把「只叠加」的设置顶开
+        intro_card = self.intro_check.isChecked()
+        intro_overlay = self.intro_overlay_check.isChecked()
 
         def job(tid):
             return merge_pipe.merge_episode(
                 self.episode_id, ids,
-                intro_title=intro_title if intro_on else None,
-                intro_card=intro_on, intro_overlay=False)
+                intro_title=intro_title if (intro_card or intro_overlay) else None,
+                intro_card=intro_card, intro_overlay=intro_overlay)
 
         def done(tid, result, error):
             if error:

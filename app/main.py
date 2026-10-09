@@ -39,9 +39,10 @@ def main() -> int:
 
     db.init_db()
     seed_prompt_files()
-    from .ai.registry import seed_tts_default, seed_faceswap_default
+    from .ai.registry import seed_tts_default, seed_faceswap_default, seed_jev_default
     seed_tts_default()
     seed_faceswap_default()
+    seed_jev_default()      # 仅当环境变量给了 JEV_API_KEY 才落一条启用配置
 
     lang = db.get_setting("ui_language", "zh")
     set_language(lang)

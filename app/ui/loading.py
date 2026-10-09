@@ -60,7 +60,7 @@ class BusyButton(QPushButton):
         self._busy_text = busy_text
         self.setEnabled(False)
         if self._spinner is None:
-            self._spinner = Spinner(14, "#ffffff" if self.objectName() == "primary" else "#4b6ef5", self)
+            self._spinner = Spinner(14, "#ffffff" if self.objectName() == "primary" else "#f97316", self)
         lay = self.layout()
         if lay is None:
             from PySide6.QtWidgets import QHBoxLayout

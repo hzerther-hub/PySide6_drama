@@ -23,13 +23,16 @@ from ..core import config, db
 from ..core.i18n import LANGS, tr
 from . import widgets as W
 
+from ..ai.jev_client import test_config as jev_test  # noqa: E402
+
 TESTERS = {"text": text_test, "image": img_test, "video": video_test,
-           "tts": tts_test, "faceswap": fs_mod.test_config}
+           "tts": tts_test, "faceswap": fs_mod.test_config, "jev": jev_test}
 SVC_LABEL = {"text": "text_svc", "image": "image_svc", "video": "video_svc",
-             "tts": "tts_svc", "faceswap": "faceswap_svc"}
+             "tts": "tts_svc", "faceswap": "faceswap_svc", "jev": "jev_svc"}
 SVC_DESC = {"text": "svc_text_desc", "image": "svc_image_desc",
             "video": "svc_video_desc", "tts": "svc_tts_desc",
-            "faceswap": "本地或远程 InsightFace 换脸服务(角色形象换脸/换脸工具页)"}
+            "faceswap": "本地或远程 InsightFace 换脸服务(角色形象换脸/换脸工具页)",
+            "jev": "状态台账门控(TypeSafe AI):长篇连续性自动判读。未配置时台账照常维护,只是不做矛盾判定"}
 
 
 class SettingsDialog(QDialog):
@@ -627,7 +630,7 @@ class ModelChipsEditor(QWidget):
             chip.setToolTip("点击置顶设为默认")
             chip.setStyleSheet(
                 "QPushButton{border-radius:12px; padding:3px 10px; font-size:12px;}"
-                + ("QPushButton{background:#4b6ef5;color:white;font-weight:700;border:none;}"
+                + ("QPushButton{background:#f97316;color:white;font-weight:700;border:none;}"
                    if i == 0 else "QPushButton{background:rgba(128,128,128,35);}"))
             chip.clicked.connect(lambda _=False, idx=i: self._promote(idx))
             self.flow.add(chip)

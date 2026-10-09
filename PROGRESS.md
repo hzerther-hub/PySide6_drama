@@ -481,3 +481,59 @@ MetricPill / VideoTaskRow / RefCard、NarrationBox(草稿与已存值不同时�
 ### 验证
 - 亮/暗两套主题 × 2 个项目 × 6 个步骤 × 资产模式切换 × 刷新 × 任务抽屉开关,全绿。
 - 50+ 个被按钮引用的 handler 全部存在(补回 `_gen_chapter_title` / `_generate_one`)。
+
+## 2026-10-09(第 27 轮:同步参考项目新增内容 —— Jev 状态门控 + 品牌色换代 + 片头叠加修复)
+> 用户:「对齐的代码又加入了 jev 你参照」。参照参考项目新增提交:`f2b9e32`/`c048463`/`3da9563`(测试校准)、
+> `45da431`/`8f013d4`/`4c7fddc`(拆分重构与修错)、`0d251f1`(片头模拟器抽组件)、
+> **`d262ac1`(片头叠加透传修复)**、`9ee15f4`(5 款片头字体)。
+### 1. Jev —— 第六类 AI 服务(TypeSafe AI System One)
+Jev 不是生成式 provider,而是**结构化决策/判读端点** `POST /v1/systemone`。
+question 三原语:`noul`(布尔/置信度)、`choice`(分类+概率分布)、`score`(序数评分)。
+- **新增 `app/ai/jev_client.py`**(对齐参考项目 `backend/src/services/adapters/moderation/jev.ts`):
+  - `decide()` **任何失败一律返回 None,绝不抛异常** —— 软建议器契约,热路径上 Jev 挂了必须 0 阻塞;
+  - TTL 缓存(key = sha1(state+questions+model) 截断 24 位,默认 5 分钟);
+  - 环境变量双命名兼容:`JEV_BASE_URL`/`JEV_API_URL`、`JEV_TIMEOUT_MS`(毫秒)/`JEV_TIMEOUT`(秒);
+  - `ping()` 连接测试:与运行期同一条通路(`state:'ping'` + 一条 noul 问),一次验完鉴权/可达性/端点;
+  - 附带 `provider_routing_questions()` 预制三问模板(参考项目保留的扩展点,当前无调用方)。
+- **注册表**:`SERVICE_TYPES` 加 `"jev"`;预设 `TypeSafe AI · Jev` / `https://api.typesafe.ai` / `jev-latest`;
+  `seed_jev_default()` 仅当环境变量有 `JEV_API_KEY` 时落一条启用配置(幂等)。
+  **不进入 `readiness()/missing_services()`** —— Jev 是可选增强,缺它不能拦下任何生成。
+- **设置页**:第 6 个服务类型页签 + 连接测试,描述「状态台账门控(TypeSafe AI):长篇连续性自动判读」。
+### 2. 人物状态台账(新增 `app/pipeline/state_ledger.py`)
+长篇跨章生成时人物年纪/功法/性格/财产/关系会无交代地跳变;前情摘要(叙事层)接不住结构化状态,
+台账是「世界现在是什么状态」的**事实层**。三段:`novel_reviewer` 单次调用提取 → 白名单合并 → Jev 门控。
+- 维度白名单:人物 `年纪/功法/性格/财产/外貌/位置`(关系走 `relations` 子对象)、世界 `时间线/主线进度`;
+- `from == to` 的假变更过滤(模型常把「未变化」也报上来,如 位置:旅店→旅店);
+- 正文 <200 字直接跳过;单章 changes ≤20 / world ≤6;`state_diffs` 保留最近 100 章;
+- **Jev 门控两问**:`conflict`(noul,矛盾置信度)+ `magnitude`(score,微小/一般/重大);
+  阈值 `JEV_LEDGER_MIN_CONFLICT`(默认 0.7);`verdict='conflict'` 时把
+  `状态台账疑似矛盾(置信度 NN%):人物维度:旧→新` 追加进该集 `review_json.issues`(保留最近 12 条)
+  —— **界面随既有审校问题自然展示,不另开入口**(与参考项目一致)。
+- **软失败全链路**:未配置 → `skipped/unconfigured`;连不通 → 熔断(连续 2 次失败冷却 10 分钟,期间直接跳过);
+  提取失败 → 跳过本章。**任何情况都不阻断批量写作主流程**。
+- **闭环**:写作提示词与策划上下文都注入台账(`_novel_settings_ctx` + `write_chapter`),
+  按 `updated_chapter` 取最近 10 个角色,防上下文膨胀;批量流水线每章写完后自动更新(失败只记不抛)。
+- UI:原文页第二行加「🧾 状态台账」按钮(手动重跑单章),命中矛盾时提示去看审校。
+### 3. 品牌色换代(对齐 `studio.css:33-48` 的 ChatFire 火焰橙)
+`--accent`/`--action-primary` `#4b6ef5`(蓝)→ **`#f97316`**,hover `#ea580c`,press `#c2410c`;
+危险色 `#ff3b30` → **`#dc2626`**;accent-bg 浅底 `#fdf0e6` / 暗底 `#2e2119`;暗色文字 `#fdba74`。
+`theme.py` 两套 QSS + 9 个 UI 模块里的内联色值一并映射(全仓已无 `#4b6ef5`)。
+
+### 4. 片头叠加修复(对齐 `d262ac1`)
+原版修的是「叠加片头不生效」:`intro_card` 服务端默认 `true`,前端只传 `undefined` 时会被默认值顶开。
+本项目导出页原先只有单一「加入片头」勾选,`intro_overlay` 永远是 `False`,叠加根本走不到。
+- 导出页片头行拆成 **「片头标题卡」+「叠加文字」两个独立开关**,初值取自 `dramas.intro_card/intro_overlay`;
+- 拼接时 **显式传 `intro_card` / `intro_overlay` 两个布尔**(不给 `None`),绕开服务端默认值;
+- `_save_intro_state` 同时落 `intro_card` 与 `intro_overlay`。
+- 验证:`build_intro_spec(card=False, overlay=True)` 现在能返回 `{card: False, overlay: True}`。
+### 5. 片头字体补全
+参考项目 `9ee15f4` 新增的 5 款里 `ZCOOLQingKeHuangYou-Regular.ttf` 本仓缺文件,已补入
+`app/assets/fonts/`;`intro.FONT_DISPLAY_NAMES` 的 10 款现已全部有对应文件(逐个校验通过)。
+
+### 验证
+- 台账全链路实测(真实文本模型):提取 10 条变更 → 合并出台账(叶尘:年纪 十七岁 / 财产 / 位置 / 性格 / relations 叶小满;世界:时间线 / 主线进度);
+  Jev 未配置时 `skipped/unconfigured`,台账照常维护。
+- 门控四条路径用桩客户端逐一验证:矛盾 0.92 → `conflict` + 审校写入;0.3 → `ok`;
+  不可达 → `skipped/jev-unreachable` 连续两次后熔断冷却开启;无变更 → `ok/no-changes` 短路。
+- 台账注入写作上下文已确认(策划上下文行含完整台账 JSON)。
+- 亮/暗两套主题 × 2 项目 × 6 步骤全绿;测试数据已从项目 4 清除。

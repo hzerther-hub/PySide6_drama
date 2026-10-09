@@ -87,7 +87,17 @@ def _novel_settings_ctx(drama_id: int) -> str:
 故事合约:{(d['novel_contract'] or '未定')[:800]}
 分卷战略:{str(d['novel_volume'] or '未定')[:1200]}
 已有章节计划:{len(db.jload(d['novel_chapters'], []) or [])} 章
-目标全书:{nm.get('chapter_count') or d['total_episodes'] or '未定'} 章 / 每章 {nm.get('word_count') or '未定'} 字"""
+目标全书:{nm.get('chapter_count') or d['total_episodes'] or '未定'} 章 / 每章 {nm.get('word_count') or '未定'} 字
+人物状态台账:{_ledger_ctx(drama_id)}"""
+
+
+def _ledger_ctx(drama_id: int) -> str:
+    """写作上下文里的状态台账(事实层)。为空返回「未建立」。"""
+    from . import state_ledger
+    led = state_ledger.ledger_for_context(drama_id)
+    if not led or not led.get("characters"):
+        return "未建立(首章写完后自动生成)"
+    return json.dumps(led, ensure_ascii=False)[:1800]
 
 
 CHAPTER_PLAN_LIMIT = 200
@@ -319,6 +329,7 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
 故事合约: {(d['novel_contract'] or '')[:400]}
 本章计划: 第{ep['episode_number']}章 {plan.get('title','')} — 目标:{plan.get('goal','')} 事件:{plan.get('events','')} 钩子:{plan.get('cliffhanger','')}
 文风: {get_novel_style(ep['drama_id'])}
+人物状态台账(硬约束,不得无交代地跳变): {_ledger_ctx(ep['drama_id'])}
 目标字数: {ep['target_words'] or 2500}
 上一章结尾(衔接用): {prev_summary}
 
@@ -760,9 +771,28 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
             ok += 1
         except Exception:  # noqa: BLE001
             failed += 1
+        # 状态台账:每章写完后更新「世界状态」事实层(提取 → 合并 → Jev 门控)。
+        # 失败只记不抛 —— 台账是增强项,绝不阻断批量写作主流程。
+        try:
+            from . import state_ledger
+            state_ledger.update_state_ledger(drama_id, r["id"], config_id=config_id)
+        except Exception:  # noqa: BLE001
+            pass
         if on_progress:
             on_progress(ok + failed, len(rows), r["episode_number"])
     return {"total": len(rows), "ok": ok, "failed": failed}
+
+
+def update_state_ledger(episode_id: int, config_id: int | None = None) -> dict | None:
+    """手动重跑单章台账(修复/补历史用);对应参考项目 POST /novel/update-state-ledger。"""
+    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("章节不存在")
+    from . import state_ledger
+    out = state_ledger.update_state_ledger(ep["drama_id"], episode_id, config_id=config_id)
+    if out is None:
+        raise RuntimeError("台账提取失败(正文过短或模型输出异常)")
+    return out
 
 
 # ── 伏笔台账(对齐原版未提交批次: LCS 去重 + 封顶 + 可交互 toggle) ──

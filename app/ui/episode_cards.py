@@ -55,7 +55,7 @@ def role_tag(role_type: str, text: str) -> QLabel:
 
 def link_label(text: str, on_click) -> QLabel:
     lab = QLabel(text)
-    lab.setStyleSheet("color:#4b6ef5; font-size:11px; background:transparent; border:none;")
+    lab.setStyleSheet("color:#f97316; font-size:11px; background:transparent; border:none;")
     lab.setCursor(Qt.PointingHandCursor)
     lab.mousePressEvent = lambda _e: on_click()
     return lab

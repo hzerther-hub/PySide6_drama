@@ -86,7 +86,7 @@ class CoverPanel(QWidget):
         self._busy = True
         self.gen_btn.busy("正在生成封面")
         self.img.setPixmap(W.pixmap_from_media(None, 146, 196))
-        self.status = BrailleSpinner(color="#4b6ef5", size=17)
+        self.status = BrailleSpinner(color="#f97316", size=17)
         self.status.start("AI 正在绘制封面…")
         self.gen_btn.layout().addWidget(self.status)
 

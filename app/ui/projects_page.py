@@ -21,7 +21,7 @@ WT_LABEL = {"novel": tr("wt_novel"), "drama": tr("wt_drama"),
 STATUS_META = {
     "pending": ("待开始", "#86909c"),
     "active": ("进行中", "#16a34a"),
-    "completed": ("已完成", "#4b6ef5"),
+    "completed": ("已完成", "#f97316"),
 }
 FILTERS = [("all", "全部"), ("draft", "待开始"), ("active", "进行中"), ("completed", "已完成")]
 FILTER_DB = {"all": None, "draft": "pending", "active": "active", "completed": "completed"}
@@ -67,7 +67,7 @@ def _pill(text: str, tone: str = "") -> QLabel:
     if tone == "success":
         style = "background:#e6f6ee; color:#16a34a;"
     elif tone == "accent":
-        style = "background:#eef1fe; color:#4b6ef5;"
+        style = "background:#fdf0e6; color:#f97316;"
     lab.setStyleSheet(style + " border-radius:999px; padding:3px 10px; font-size:11px;")
     return lab
 
@@ -93,7 +93,7 @@ class ProjectCard(QFrame):
         cover = QFrame()
         cover.setFixedHeight(112)
         cover.setStyleSheet(
-            "QFrame#cover{background:linear-gradient(135deg,#eef1fe 0%,#f7f8fa 70%);"
+            "QFrame#cover{background:linear-gradient(135deg,#fdf0e6 0%,#f7f8fa 70%);"
             "border:none; border-bottom:1px solid #e4e7ec; border-top-left-radius:10px;"
             "border-top-right-radius:10px;}")
         cover.setObjectName("cover")
@@ -108,7 +108,7 @@ class ProjectCard(QFrame):
             init = QLabel((drama["title"] or "?")[:1].upper())
             init.setAlignment(Qt.AlignCenter)
             init.setStyleSheet(
-                "color:#4b6ef5; opacity:0.55; font-size:30px; font-weight:700; border:none;")
+                "color:#f97316; opacity:0.55; font-size:30px; font-weight:700; border:none;")
             cl.addWidget(init)
         cover_ratios = QHBoxLayout()
         cover_ratios.addStretch(1)
@@ -164,7 +164,7 @@ class ProjectCard(QFrame):
         style = db.q1("SELECT name FROM style_presets WHERE value=?", (drama["style"],))
         if style and drama["work_type"] != "novel":
             st = W.tag(style["name"])
-            st.setStyleSheet("background:#eef1fe; color:#4b6ef5; border-radius:4px;"
+            st.setStyleSheet("background:#fdf0e6; color:#f97316; border-radius:4px;"
                              "padding:2px 8px; font-size:12px;")
             chips.addWidget(st)
         chips.addStretch(1)
@@ -349,7 +349,7 @@ class ProjectsPage(QWidget):
         lay.setSpacing(10)
         icon = QLabel("⊞" if not has_rows else "🔍")
         icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet("font-size:30px; color:#4b6ef5;")
+        icon.setStyleSheet("font-size:30px; color:#f97316;")
         lay.addWidget(icon)
         title = QLabel(tr("empty_first_project") if not has_rows else tr("empty_no_match"))
         title.setAlignment(Qt.AlignCenter)

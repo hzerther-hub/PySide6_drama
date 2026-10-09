@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""AI 服务配置注册表:四类服务(text/image/video/tts)多供应商 CRUD + 默认项 + 连通测试。"""
+"""AI 服务配置注册表:六类服务(text/image/video/tts/faceswap/jev)多供应商 CRUD + 默认项 + 连通测试。"""
 from __future__ import annotations
 
 from ..core import db
 
-SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap"]
+SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev"]
 
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
@@ -66,9 +66,16 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "远程换脸服务 · FaceMe", "provider": "remote-faceswap",
          "base_url": "https://face.mei.biz", "models": ["face-swap"]},
     ],
+    # Jev 不是生成式 provider:它是 TypeSafe AI 的结构化决策/判读端点(/v1/systemone),
+    # 所以不进 adapters,只作为第六类服务登记。
+    "jev": [
+        {"name": "TypeSafe AI · Jev", "provider": "jev",
+         "base_url": "https://api.typesafe.ai", "models": ["jev-latest"]},
+    ],
 }
 
-SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音", "faceswap": "换脸"}
+SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音", "faceswap": "换脸",
+         "jev": "Jev"}
 
 # 各 provider 的可选模型候选(新建时展示;对齐原版设置页展示)
 MODEL_CHOICES: dict[str, list[str]] = {
@@ -193,9 +200,27 @@ def seed_faceswap_default() -> None:
                    "face-swap", remark="本地换脸服务", priority=0)
 
 
+def seed_jev_default() -> None:
+    """Jev 种子:仅当环境变量给了 Key 时落一条启用配置(幂等,已有任何 jev 行就跳过)。
+
+    对齐参考项目 seedDefaultJevConfigIfMissing:与 TTS 种子的区别是这条 is_active=True。
+    """
+    import os
+    key = (os.environ.get("JEV_API_KEY") or "").strip()
+    if not key:
+        return
+    if db.q1("SELECT id FROM ai_service_configs WHERE service_type='jev'"):
+        return
+    add_config("jev", "jev",
+               (os.environ.get("JEV_BASE_URL") or os.environ.get("JEV_API_URL")
+                or "https://api.typesafe.ai").rstrip("/"),
+               os.environ.get("JEV_MODEL") or "jev-latest",
+               api_key=key, remark="Jev 状态门控(TypeSafe AI)", priority=100)
+
+
 # ── 就绪检查(缺失配置/Key 时直接拦下,不让请求白跑) ──
 SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
-                "faceswap": "换脸"}
+                "faceswap": "换脸", "jev": "Jev"}
 # 不需要 API Key 的 provider(本地服务)
 NO_KEY_PROVIDERS = {"local-faceswap"}
 

@@ -38,7 +38,7 @@ def ep_stage_index(ep: dict) -> int:
 
 STATUS_META = {
     "pending": ("待开始", "#86909c"),
-    "active": ("进行中", "#4b6ef5"),
+    "active": ("进行中", "#f97316"),
     "completed": ("已完成", "#16a34a"),
 }
 
@@ -103,7 +103,7 @@ class EpisodeCard(QFrame):
             self.name_btn = QPushButton("✨ " + tr("ai_gen_title"))
             self.name_btn.setToolTip(tr("gen_title_tip"))
             self.name_btn.setStyleSheet(
-                "QPushButton{border:1px dashed #4b6ef5;color:#4b6ef5;border-radius:10px;"
+                "QPushButton{border:1px dashed #f97316;color:#f97316;border-radius:10px;"
                 "padding:2px 10px;font-size:11px;background:transparent;}")
             self.name_btn.clicked.connect(lambda: self._gen_chapter_title(ep["id"]))
             name_row.addWidget(self.name_btn)
@@ -122,7 +122,7 @@ class EpisodeCard(QFrame):
             if i < idx:
                 seg.setStyleSheet("background:#16a34a;border-radius:2px;")
             elif i == idx:
-                seg.setStyleSheet("background:#4b6ef5;border-radius:2px;")
+                seg.setStyleSheet("background:#f97316;border-radius:2px;")
             else:
                 seg.setStyleSheet("background:#dfe3e8;border-radius:2px;")
             seg.setToolTip(EP_STAGE_CN[st])
@@ -194,8 +194,8 @@ class EpisodeCard(QFrame):
         st.setObjectName("muted")
         foot.addWidget(st)
         foot.addStretch(1)
-        del_btn = W.danger_btn("🗑")
-        del_btn.setFixedSize(30, 28)
+        del_btn = W.danger_btn(tr("delete"))
+        del_btn.setFixedHeight(28)
         del_btn.setToolTip(tr("delete_episode"))
         del_btn.clicked.connect(self._del)
         foot.addWidget(del_btn)
@@ -559,7 +559,7 @@ class ProjectPage(QWidget):
         top_line.setSpacing(8)
         top_line.addWidget(self.title)
         self.style_tag = W.tag("")
-        self.style_tag.setStyleSheet("background:#eef1fe; color:#4b6ef5; border-radius:4px;"
+        self.style_tag.setStyleSheet("background:#fdf0e6; color:#f97316; border-radius:4px;"
                                      "padding:2px 8px; font-size:12px;")
         top_line.addWidget(self.style_tag)
         self.imit_tag = W.tag(tr("imitated"))

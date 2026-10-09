@@ -59,7 +59,7 @@ def danger_btn(text: str) -> QPushButton:
     return b
 
 
-AVATAR_COLORS = ["#4b6ef5", "#e0794b", "#3aa675", "#b05cc4", "#c94b62", "#4b9cc9"]
+AVATAR_COLORS = ["#f97316", "#e0794b", "#3aa675", "#6366f1", "#c94b62", "#4b9cc9"]
 
 
 def avatar(initial: str, size: int = 44) -> QLabel:

@@ -30,7 +30,7 @@ BRAILLE_OK = "⠿⠿"            # 完成
 class BrailleSpinner(QWidget):
     """盲文点字旋转指示器。start(text) / stop()。"""
 
-    def __init__(self, color: str = "#4b6ef5", size: int = 15, parent=None):
+    def __init__(self, color: str = "#f97316", size: int = 15, parent=None):
         super().__init__(parent)
         self._i = 0
         self._color = QColor(color)
@@ -87,7 +87,7 @@ class WaitingButton(QPushButton):
             self._lay.setContentsMargins(12, 0, 12, 0)
             self._lay.setSpacing(6)
         if self._spin is None:
-            self._spin = BrailleSpinner(color="#ffffff" if self.objectName() == "primary" else "#4b6ef5", parent=self)
+            self._spin = BrailleSpinner(color="#ffffff" if self.objectName() == "primary" else "#f97316", parent=self)
             self._lay.addWidget(self._spin)
         self._spin.start(text)
         if text:
@@ -154,7 +154,7 @@ class BrailleBar(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         f = QFont("Segoe UI Symbol", 11)
         p.setFont(f)
-        p.setPen(QColor("#4b6ef5"))
+        p.setPen(QColor("#f97316"))
         text = "".join("⣿" if i < self._done else "⠄" for i in range(self._cells))
         p.drawText(self.rect(), Qt.AlignLeft | Qt.AlignVCenter, text)
         p.end()

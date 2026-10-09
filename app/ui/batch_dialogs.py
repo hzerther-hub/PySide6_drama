@@ -58,7 +58,7 @@ class _SegmentBar(QWidget):
             x += seg
         if self._run:
             seg = w * self._run / self._total
-            p.setBrush(QColor("#4b6ef5"))
+            p.setBrush(QColor("#f97316"))
             p.drawRoundedRect(int(x), 0, max(int(seg), 1), h, 6, 6)
         p.end()
 
