@@ -1388,8 +1388,13 @@ class EpisodePage(QWidget):
         if len(ids) < 2:
             QMessageBox.information(self, tr("export_stage"), "≥2")
             return
+        intro_on = self.intro_enabled.isChecked() if hasattr(self, "intro_enabled") else False
+        intro_title = self.intro_title_edit.text().strip() if hasattr(self, "intro_title_edit") else None
+
         def job(tid):
-            return merge_pipe.merge_episode(self.episode_id, ids)
+            return merge_pipe.merge_episode(self.episode_id, ids,
+                                            intro_title=intro_title if intro_on else None,
+                                            intro_card=intro_on, intro_overlay=False)
         def done(tid, result, error):
             if error:
                 err(tr("export_stage"))
