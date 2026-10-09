@@ -478,10 +478,26 @@ def current_language() -> str:
 
 
 def tr(key: str, *args) -> str:
-    """取界面文案:当前语言主词典 → 英文主词典 → 英文补充词典 → 中文补充词典 → zh 主词典 → key。"""
+    """取界面文案。
+
+    优先级:
+      1. 当前语言主词典里**真正翻译过**的值(与中文基线不同才算翻译);
+      2. 补充词典 ui_strings(15 语言齐全);
+      3. 英文主词典 / 英文补充词典;
+      4. 中文基线 Z;
+      5. key 本身。
+
+    为什么要判「是否等于中文基线」:主词典是用中文基线铺满的,未翻译的键在每张表里
+    都是同一个中文字面量。若只看「当前语言表里有没有这个键」,切到任何语言都会拿到中文
+    (实测 save/close/novel_settings 等键在英文下都返回中文)。
+    """
     from .ui_strings import ui_lookup
-    table = T.get(_current, T["en"])
-    val = (table.get(key) or T["en"].get(key)
-           or ui_lookup(_current, key) or ui_lookup("en", key)
-           or Z.get(key) or key)
+    zh_base = Z.get(key)
+    val = T.get(_current, {}).get(key)
+    if not val or (zh_base is not None and val == zh_base):
+        sup = ui_lookup(_current, key)
+        if sup and sup != zh_base:
+            val = sup
+    if not val:
+        val = T.get("en", {}).get(key) or ui_lookup("en", key) or zh_base or key
     return val.format(*args) if args else val

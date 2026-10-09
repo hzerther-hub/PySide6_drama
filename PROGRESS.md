@@ -831,3 +831,28 @@ retry_at 直接跟随、每次提交都过串行门。
 - 修复:网格布局与 stretch 改为 `__init__` 里**常驻创建一次**,`reload()` 只清 `ep_grid`;
   清理时先 `setParent(None)` 立即摘除(此处 `deleteLater()` 不生效),再 `deleteLater()`。
 - 验证:连续 6 次 reload 后「添加第 N 集」对象数与可见数均为 1,`ep_grid` 条目恒为 2。
+
+## 2026-10-09(第 34 轮:小说设定入口上移 + 写作闸门接上 + i18n 查询顺序修正)
+### 1. 「小说设定」入口从单集页移到项目详情页头部
+- 原入口在制作台原文页第二行,要 制作 → 第 N 集 → 原文 才找得到;策划是项目级的事。
+- 现放在项目详情页头部:**项目设置 / 宣传文案 / 小说设定 / 整书导入**,
+  仅小说项目显示。pydrama 与参考项目 `E:\xiaoshuo` 两边都改(commit `96add89`):
+  detail.vue 加按钮跳 `/drama/{id}/episode/1?wizard=1`,episode.vue 的 `maybeShowNovelWizard`
+  识别 `?wizard=1` 后无视「是否已有总纲」直接打开,并移除单集页工具条里的原按钮。
+
+### 2. 写作闸门:之前形同虚设
+- `assert_novel_ready()` **写了但全仓没有任何调用点**;UI 侧只把按钮置灰,
+  换个入口(批量面板 / 程序化调用)就能绕过。实测 `check_novel_redlines()` 返回缺步骤但从不抛错。
+- 现在:
+  - pipeline 层 `write_chapter()` / `batch_write_chapters()` 入口调 `_enforce_novel_gate()`
+    (仅 novel 项目适用,其它创作目标不受这条红线约束);
+  - UI 层 `_batch_novel()` / `_run_batch()` 补查并提示。
+- 参考项目那边的闸门本来就是有的(`doGenNovel` 与批量生成都检查 `missing` 并 toast),
+  这次只是把 pydrama 对齐到同一语义。
+
+### 3. i18n 查询顺序修正(批次 2 的前提)
+主词典是用中文基线 `Z` 铺满的,**未翻译的键在每张语言表里都是同一个中文字面量**。
+原来的 `tr()` 只看「当前语言表有没有这个键」,于是切到任何语言都会拿到中文
+(实测英文下 `save` / `close` / `novel_settings` 等 153 个键全是中文)。
+改为:当前语言表的值**与中文基线相同即视为未翻译**,优先取补充词典 `ui_strings`(15 语言齐全)。
+实测 `save` / `close` / `novel_settings` / `tasks` 等在 en/ja/ko/fr 下已正常翻译。

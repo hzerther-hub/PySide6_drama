@@ -583,6 +583,11 @@ class ProjectPage(QWidget):
         self.promo_btn = QPushButton("◈ " + tr("promo_copy"))
         self.promo_btn.clicked.connect(self._promo)
         head.addWidget(self.promo_btn)
+        # 小说设定入口(从制作台原文页移到这里,策划是项目级的事,不该藏在单集页里)
+        self.novel_btn = QPushButton("⚙ " + tr("novel_settings"))
+        self.novel_btn.setToolTip(tr("novel_settings_tip"))
+        self.novel_btn.clicked.connect(self._open_novel_settings)
+        head.addWidget(self.novel_btn)
         self.book_btn = QPushButton("▤ " + tr("import_book"))
         self.book_btn.setToolTip("导入整本 TXT → 结构分析 → 依样仿写(新建项目)")
         self.book_btn.clicked.connect(self._book_import)
@@ -661,6 +666,12 @@ class ProjectPage(QWidget):
     def _promo(self):
         PromoDialog(self, self.drama_id).exec()
 
+    def _open_novel_settings(self):
+        """打开小说策划与设定(总纲/世界观/合约/卷战略/章节计划/主要角色)。"""
+        from .novel_dialogs import NovelPlanDialog
+        NovelPlanDialog(self, self.drama_id).exec()
+        self.reload()
+
     def _book_import(self):
         from .book_import_dialog import BookImportDialog
         BookImportDialog(self, self.drama_id).exec()
@@ -672,6 +683,8 @@ class ProjectPage(QWidget):
             return
         self._drama = dict(d)
         self.title.setText(d["title"])
+        # 小说设定是小说线项目的入口,其它创作目标不显示
+        self.novel_btn.setVisible((d["work_type"] or "") == "novel")
         nc = db.q1("SELECT COUNT(*) c FROM characters WHERE drama_id=?", (drama_id,))["c"]
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama_id,))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]

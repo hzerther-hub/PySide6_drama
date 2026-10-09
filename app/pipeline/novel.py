@@ -314,6 +314,8 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集(章)不存在")
+    # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
+    _enforce_novel_gate(ep["drama_id"])
     d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     chapters = db.jload(d["novel_chapters"], [])
     plan = next((c for c in chapters if int(c.get("number", 0)) == ep["episode_number"]), {})
@@ -685,6 +687,18 @@ def assert_novel_ready(drama_id: int) -> None:
         raise RuntimeError(f"小说设定未完成，请先补齐步骤 {'、'.join(str(s) for s in missing)}")
 
 
+def _enforce_novel_gate(drama_id: int) -> None:
+    """设定未齐时禁止写小说(非小说项目不受这条红线约束)。
+
+    UI 侧虽然会把「AI 生成小说 / 批量写」置灰,但按钮禁用挡不住其它入口
+    (键盘、批量面板、程序化调用),所以在 pipeline 层再拦一道。
+    """
+    d = db.q1("SELECT work_type FROM dramas WHERE id=?", (drama_id,))
+    if not d or (d["work_type"] or "") != "novel":
+        return
+    assert_novel_ready(drama_id)
+
+
 def missing_steps_text(drama_id: int) -> str:
     missing = check_novel_redlines(drama_id)
     if not missing:
@@ -748,6 +762,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
     事实台账 + 未回收伏笔 + 卷段摘要,并行会让后章取不到前文、把同一情节整章重写。
     另有:默认已有正文的章节整批拒绝(force=True 才放行);续写红线(前章无正文拒写)。
     """
+    _enforce_novel_gate(drama_id)
     rows = [r for r in (db.q1(f"SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
                         for i in episode_ids)]
     rows = [r for r in rows if r]

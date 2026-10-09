@@ -725,10 +725,6 @@ class EpisodePage(QWidget):
         self.style_combo.currentIndexChanged.connect(self._on_style_pick)
         row.addWidget(self.style_combo)
 
-        plan_btn = QPushButton("⚙ " + tr("novel_settings"))
-        plan_btn.setToolTip(tr("novel_settings_tip"))
-        plan_btn.clicked.connect(self._open_plan)
-        row.addWidget(plan_btn)
         self.chapter_name_btn = QPushButton("✎ " + tr("gen_title"))
         self.chapter_name_btn.setToolTip(tr("gen_title_tip"))
         self.chapter_name_btn.clicked.connect(lambda: self._gen_chapter_title())
@@ -1021,6 +1017,11 @@ class EpisodePage(QWidget):
     def _batch_novel(self):
         """批量写本章及后续(对齐原版未提交批次的语义重定义 + 进度条 + 阶段)。"""
         from ..core.preflight import ensure_ready
+        # 设定未齐 → 不写小说(按钮虽已置灰,这里再拦一道,防止其它入口绕过)
+        hint = self._novel_redline_hint()
+        if hint:
+            warn(hint)
+            return
         if not ensure_ready("text", self._cfg_for("text")):
             return
         self._save_raw_silent()
@@ -1049,8 +1050,15 @@ class EpisodePage(QWidget):
         self._run_batch([e["id"] for e in pending[:10]], force=False)
 
     def _run_batch(self, episode_ids: list[int], force: bool):
-        """执行批量写章:三段式进度条 + 阶段显示 + 完成后提示。"""
+        """执行批量写章:三段式进度条 + 阶段显示 + 完成后提示。
+
+        批量写作的所有入口都收口到这里,设定未齐一律不放行。
+        """
         from ..pipeline import novel as novel_pipe
+        hint = self._novel_redline_hint()
+        if hint:
+            warn(hint)
+            return
         self._batch_ids = list(episode_ids)
         self._batch_done = 0
         self._batch_ok = 0
