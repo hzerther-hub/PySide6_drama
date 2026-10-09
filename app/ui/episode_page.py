@@ -1194,7 +1194,7 @@ class EpisodePage(QWidget):
     def _save_raw_silent(self):
         db.ex("UPDATE episodes SET content=?, target_words=?, updated_at=? WHERE id=?",
               (self.raw_edit.toPlainText(), self.words_spin.value(), db.now(), self.episode_id))
-        db.set_setting("novel_style", self.style_edit.text().strip())   # 全局兜底
+        db.set_setting("novel_style", self.style_edit.toPlainText().strip())   # 全局兜底
         self._save_novel_style()                                  # 项目级为准
         self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
 

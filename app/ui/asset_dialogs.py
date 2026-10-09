@@ -23,6 +23,26 @@ ETHNICITIES = [("auto", "auto"), ("east_asian", "u_eth_east_asian"),
                ("african", "u_eth_african"), ("mixed", "u_eth_mixed")]
 
 
+def _has_generated_content(drama_id: int) -> bool:
+    """项目是否已经产出**真实文字**(正文 / 剧本 / 漫画格)。
+
+    锁定创意描述的本意是保护「已按这份创意生成的章节」之间的一致性,
+    所以只有真生成过内容才锁;新建项目自带的空壳集数不算
+    (否则创意描述从创建那一刻就永远改不了)。
+    """
+    row = db.q1("""SELECT COUNT(*) c FROM episodes
+                   WHERE drama_id=? AND (
+                       LENGTH(TRIM(COALESCE(content,''))) > 0
+                    OR LENGTH(TRIM(COALESCE(script_content,''))) > 0)""", (drama_id,))
+    if row and row["c"]:
+        return True
+    panel = db.q1("""SELECT COUNT(*) c FROM comic_panels p JOIN episodes e ON e.id=p.episode_id
+                     WHERE e.drama_id=?
+                       AND (LENGTH(TRIM(COALESCE(p.description,''))) > 0
+                         OR LENGTH(TRIM(COALESCE(p.dialogue,''))) > 0)""", (drama_id,))
+    return bool(panel and panel["c"])
+
+
 def _muted(t: str) -> QLabel:
     return W.muted(t)
 
@@ -116,27 +136,29 @@ class ProjectSettingsDialog(QDialog):
         self.ethnicity.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("ethnicity"), self.ethnicity)
 
-        # ── 新增:创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
-        has_first_ep = bool(db.q1("SELECT id FROM episodes WHERE drama_id=? LIMIT 1", (drama_id,)))
+        # ── 创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
+        # 锁定条件是「**已经按这份创意生成出真实文字**」,不是「项目里存在第 1 集」——
+        # 新建项目必定会建一个空的第 1 集,按前者判会导致创意描述从创建那一刻就永远改不了。
+        self._generated = _has_generated_content(drama_id)
         self.skip_creative = QCheckBox("不需要创意描述 — 我会自己粘贴文章")
         self.skip_creative.setChecked(bool(d["skip_creative"]))
-        self.skip_creative.setDisabled(has_first_ep)
+        self.skip_creative.setDisabled(self._generated)
         f.addRow("", self.skip_creative)
         self.creative = QPlainTextEdit(d["creative_description"] or "")
-        self.creative.setPlaceholderText("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣���、拿回母亲遗产……")
+        self.creative.setPlaceholderText("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣男、拿回母亲遗产……")
         self.creative.setMaximumHeight(96)
-        self.creative.setDisabled(has_first_ep or bool(d["skip_creative"]))
+        self.creative.setDisabled(self._generated or bool(d["skip_creative"]))
         f.addRow(tr("u_creative_desc"), self.creative)
         f.addRow("", W.muted(
-            "已有第 1 集,创意描述已锁定不可修改(如需调整,请新建项目)" if has_first_ep
-            else "项目级「故事是什么」的全文描述,AI 用它生成匹配的章节内容(小说/短剧/漫画 都用)"))
+            tr("creative_locked_hint") if self._generated
+            else tr("creative_free_hint")))
         self.total_eps = QSpinBox()
         self.total_eps.setRange(1, 999)
         self.total_eps.setValue(int(d["total_episodes"] or 1))
         f.addRow("集数", self.total_eps)
         f.addRow("", W.muted("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
         self.skip_creative.toggled.connect(
-            lambda on: self.creative.setDisabled(on or has_first_ep))
+            lambda on: self.creative.setDisabled(on or self._generated))
         root.addLayout(f)
         root.addStretch(1)
         row = QHBoxLayout()
