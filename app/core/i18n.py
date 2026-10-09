@@ -45,7 +45,7 @@ Z = {  # 中文(基准)
  "raw_content": "原始内容", "ai_rewrite": "AI 改写", "production": "视漫制作", "storyboard": "分镜", "comic": "漫画",
  "export_stage": "拼接导出", "rewrite": "重新改写", "ai_novel": "AI 生成小说", "batch_write": "批量写本章及后续",
  "doing_now": "进行中", "collapse_sidebar": "收起侧栏", "import_book": "整书导入",
- "style_custom": "自定义…", "style_saved": "文风已保存", "jev_svc": "Jev",
+ "style_custom": "自定义…", "style_saved": "文风已保存", "jev_svc": "Jev", "nav_face_swap": "换脸", "nav_merger": "合并",
  "asset_empty_title": "开始提取资产",
  "asset_empty_desc": "角色、场景和道具会在提取后显示在这里,可分别单独提取,也可一键并行提取全部。",
  "props_empty": "本集暂无涉及事态发展的关键道具",

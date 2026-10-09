@@ -312,6 +312,20 @@ QStatusBar { background: #f5f6f8; color: #86909c; }
 QSplitter::handle { background: #e4e7ec; }
 QToolTip { background: #ffffff; color: #1f2329; border: 1px solid #d5d9e0; padding: 4px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; }
+/* ── 顶栏与分段导航(对齐原版 layouts/default.vue)── */
+QWidget#headerBar { background: #f7f8fa; border-bottom: 1px solid #e7e9ee; }
+QLabel#brandMark { background: #f97316; color: #ffffff; border-radius: 9px;
+  font-size: 17px; font-weight: 800; }
+QLabel#brandName { color: #17181a; font-size: 15px; font-weight: 700; background: transparent; }
+QLabel#brandSub { color: #9aa1ad; font-size: 10px; background: transparent; }
+QFrame#navSegWrap { background: #eef0f3; border-radius: 999px; }
+QPushButton#navSeg { background: transparent; border: none; border-radius: 999px;
+  padding: 6px 14px; font-size: 13px; font-weight: 600; color: #5c6370; }
+QPushButton#navSeg:hover { color: #17181a; }
+QPushButton#navSeg:checked { background: #ffffff; color: #17181a; font-weight: 700; }
+QPushButton#headerIconBtn { background: transparent; border: none; border-radius: 16px;
+  color: #5c6370; font-size: 16px; padding: 6px; min-width: 32px; min-height: 32px; }
+QPushButton#headerIconBtn:hover { background: #e9ebef; color: #17181a; }
 QPushButton#filterChip { background: #f2f3f5; border: none; border-radius: 999px;
   padding: 6px 14px; font-size: 12px; font-weight: 600; color: #4e5969; }
 QPushButton#filterChip:hover { background: #e9ebef; color: #1f2329; }
@@ -354,6 +368,20 @@ QMenu::item { padding: 6px 22px; border-radius: 6px; }
 QMenu::item:selected { background: #33364a; }
 QStatusBar { background: #17181c; color: #8b909a; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; }
+/* ── 顶栏与分段导航(对齐原版 layouts/default.vue)── */
+QWidget#headerBar { background: #f7f8fa; border-bottom: 1px solid #e7e9ee; }
+QLabel#brandMark { background: #f97316; color: #ffffff; border-radius: 9px;
+  font-size: 17px; font-weight: 800; }
+QLabel#brandName { color: #17181a; font-size: 15px; font-weight: 700; background: transparent; }
+QLabel#brandSub { color: #9aa1ad; font-size: 10px; background: transparent; }
+QFrame#navSegWrap { background: #eef0f3; border-radius: 999px; }
+QPushButton#navSeg { background: transparent; border: none; border-radius: 999px;
+  padding: 6px 14px; font-size: 13px; font-weight: 600; color: #5c6370; }
+QPushButton#navSeg:hover { color: #17181a; }
+QPushButton#navSeg:checked { background: #ffffff; color: #17181a; font-weight: 700; }
+QPushButton#headerIconBtn { background: transparent; border: none; border-radius: 16px;
+  color: #5c6370; font-size: 16px; padding: 6px; min-width: 32px; min-height: 32px; }
+QPushButton#headerIconBtn:hover { background: #e9ebef; color: #17181a; }
 QPushButton#filterChip { background: #2a2c33; border: none; border-radius: 999px;
   padding: 6px 14px; font-size: 12px; font-weight: 600; color: #b8bcc4; }
 QPushButton#filterChip:hover { background: #33364a; color: #f2f3f5; }

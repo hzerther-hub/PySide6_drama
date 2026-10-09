@@ -650,3 +650,47 @@ comic / prompts_gen / 分镜等调用点已接线。
    **上传体积与 MIME 白名单**、**上传缩略图**;
 7. **变体表缺 tags / sort_order 列**(导致无法做子集最大命中与 tie-break);
 8. **GLM 整段视频直传的 16384 token 余量与 40MB/120s 守卫**。
+
+## 2026-10-09(第 30 轮:UI 差分审计 —— 修死代码 + 全局导航壳对齐)
+> 接着做**前端差分审计**(参考 20 个 .vue 页面/组件 vs 本仓 app/ui/),按影响排序处理。
+### 1. 修一个真缺陷:两个工具页是死代码
+审计发现 `FaceSwapPage`(`face_swap_page.py`)与 `MergerToolPage`(`merger_tool_page.py`)
+**从未被挂进 MainWindow 的 stack,也没有任何入口** —— 参考项目的 `/tools/face-swap` 路由在本仓完全没有对应物,
+两个类写了却永远打不开。现已:
+- 实例化并加入 `MainWindow.stack`(共 6 页);
+- 顶栏分段导航新增「换脸」「合并」两个入口,`_goto()` 按 key 切页并同步胶囊选中态。
+### 2. 全局导航壳(对齐 layouts/default.vue)
+- **顶栏跟随主题**:此前写死 `#202126` 深色,亮色模式下也是黑的;改为 `QWidget#headerBar` + 亮暗两套 QSS。
+- **品牌块**:圆角渐变方块 + 「易」(`#brandMark`)+ 双行字标「易好网文短剧 / Yihao Shorts」
+  (此前只有一张 logo.png 或一个裸「易」字)。
+- **分段胶囊导航**:`#navSegWrap` 轨道 + `#navSeg` 选中态(白底/深色底 + 加粗),此前是无选中态的平铺文字按钮。
+- 主题 / 设置 / 语言三个按钮改为 32px 圆形图标键(`#headerIconBtn`),hover 有底色。
+- `retranslate()` 里同步导航文案与选中态(切语言后胶囊不会错位)。
+### 3. 存储用量卡(对齐 routes/storage.ts + utils/dirsize.ts)
+新增 `app/core/storage.py`:分桶统计 db/images/videos/merged/comics/uploads/temp/other,
+数据库文件(含 -wal/-shm)单独计数(不在目录遍历里),另报剩余可用空间;
+**60 秒缓存 + stale-while-revalidate**(过期先返回旧值再后台重算)。
+设置页存储页改成按桶列出 + 总量 + 剩余空间(此前只有一行 static 目录 MB 数)。
+Windows 上 `os.statvfs` 不存在,改用 `shutil.disk_usage`。
+### 4. 建项目自动生成首集(对齐 auto-generate.ts)
+新增 `app/pipeline/auto_generate.py`:按 work_type 后台跑对应 Agent 并落库 ——
+novel→`episodes.content`、drama→`episodes.script_content`、comic→`comic_panels`(JSON 数组,
+解析失败退回 content)、promotion→`episodes.content`;clone 不生成(分镜来自参考视频拆解)。
+建项目时自动触发(文本服务未就绪则跳过),走 sys_task 记录,失败只记任务不阻断建项目。
+### 验证
+亮/暗 × 2 项目 × 6 步骤 × 3 个导航页 × 片头编辑器全绿。
+
+### UI 审计出的其余缺口(未做,按影响排序)
+1. **i18n 覆盖**:`app/ui/` 下仍有约 700 处硬编码中文,15 语言只覆盖了一部分界面文案 —— 这是目前最大的
+   用户可见差距(切语言后大量界面仍是中文)。
+2. **ConfirmDialog 抽象**:仍是裸 `QMessageBox.question`,没有参考项目的图标变体 / loading 态 / Enter 语义。
+3. **BaseSelect / MentionTextarea**:可搜索分组下拉、`@角色名` 自动补全(参考项目的
+   `@`-token 是提示词的承重结构,本仓只能手打)。
+4. **ModelSelect 语义**:参考用 `provider/model` 复合键,同一配置下的多个模型可选;本仓按 config_id 平铺。
+5. **设置页 AI 配置列表 / 风格预设列表**:仍是单行文本 `QListWidget`,缺启用开关、模型 chips、逐行测试、删除、空态。
+6. **换脸工具页**:参考是 ①源人脸 → ②角色模板 → ③结果 的三段式向导,含分辨率告警、剪贴板/URL 粘贴、
+   逐图重绘、灯箱、全部下载、一键应用/还原;本仓仍是平铺卡网格。
+7. **无新手引导**(`useTour.ts`):首启引导与帮助按钮都没有(`tours_seen` 有种子行但无人读)。
+8. **无列表骨架屏**、卡片不支持键盘激活、无全局 Esc 优先级链、无 Ctrl+Q 智能质检弹层、无查找替换条。
+9. **暗色调色板**仍是中性灰,参考是带蓝灰调的 `#0b0f16 / #131a24`;按钮圆角 6px vs 参考 `--radius-pill`;
+   无阴影/hover 填充/focus 环/品牌渐变/间距刻度。

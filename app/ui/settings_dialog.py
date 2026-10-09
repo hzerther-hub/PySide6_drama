@@ -407,22 +407,49 @@ class SettingsDialog(QDialog):
 
     # ── 存储 ──
     def _page_storage(self) -> QWidget:
+        """存储用量卡(对齐参考项目 routes/storage.ts):分桶统计 + 剩余空间 + 打开目录。"""
+        from ..core import storage
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
-        db_size = config.DB_PATH.stat().st_size if config.DB_PATH.exists() else 0
-        static_size = sum(f.stat().st_size for f in config.STATIC_DIR.rglob("*") if f.is_file())
+        lay.setSpacing(10)
         box = W.make_card()
         f = QFormLayout(box)
         f.setContentsMargins(14, 14, 14, 14)
-        f.addRow("SQLite", QLabel(f"{config.DB_PATH}  ({db_size/1048576:.1f} MB)"))
-        f.addRow(tr("storage"), QLabel(f"{config.STATIC_DIR}  ({static_size/1048576:.1f} MB)"))
+        self._storage_labels: dict[str, QLabel] = {}
+        self._refresh_storage(f)
         open_btn = QPushButton("打开数据目录")
         open_btn.clicked.connect(lambda: __import__("os").startfile(str(config.DATA_DIR)))  # noqa
         f.addRow("", open_btn)
         lay.addWidget(box)
+        hint = W.muted("用量每 60 秒刷新一次;数据库文件(含 WAL)单独计数,不在目录遍历里")
+        lay.addWidget(hint)
         lay.addStretch(1)
         return w
+
+    def _refresh_storage(self, form: QFormLayout | None = None) -> None:
+        """重算并刷新各分桶用量行。"""
+        from ..core import storage
+        data = storage.get_usage()
+        buckets = data.get("buckets") or {}
+        for key, label in storage.BUCKET_CN.items():
+            size = storage.human_size(buckets.get(key, 0))
+            if form is not None:
+                row = QLabel(size)
+                self._storage_labels[key] = row
+                form.addRow(label, row)
+            elif key in self._storage_labels:
+                self._storage_labels[key].setText(size)
+        total = QLabel(storage.human_size(data.get("used", 0)))
+        free = QLabel(storage.human_size(data.get("free", 0)))
+        if form is not None:
+            form.addRow("◆", total)
+            self._storage_labels["used"] = total
+            form.addRow("剩余可用", free)
+            self._storage_labels["free"] = free
+        else:
+            self._storage_labels.get("used", total).setText(storage.human_size(data.get("used", 0)))
+            self._storage_labels.get("free", free).setText(storage.human_size(data.get("free", 0)))
 
     # ── 关于 ──
     def _page_about(self) -> QWidget:

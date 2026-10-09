@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QMainWindow,
+from PySide6.QtWidgets import (
+    QFrame,QComboBox, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
@@ -38,41 +39,61 @@ class MainWindow(QMainWindow):
 
         # 顶栏
         top = QWidget()
-        top.setStyleSheet("background:#202126;border-bottom:1px solid #2c2e35;")
+        top.setObjectName("headerBar")          # 跟随主题,不再写死深色
         tlay = QHBoxLayout(top)
         tlay.setContentsMargins(20, 10, 20, 10)
-        from PySide6.QtGui import QPixmap
-        _logo_path = config.ROOT_DIR / "app" / "assets" / "logo.png"
-        logo_lab = QLabel()
-        if _logo_path.exists():
-            pm = QPixmap(str(_logo_path)).scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            logo_lab.setPixmap(pm)
-        else:
-            logo_lab.setText("易")
-        logo_lab.setStyleSheet("background:transparent;border:none;")
-        logo = QLabel("易好短剧")
-        logo.setStyleSheet("color:#f2f3f5;font-weight:700;font-size:16px;background:transparent;border:none;")
+        tlay.setSpacing(6)
+        # 品牌块:圆角渐变方块 + 「易」,对齐原版 .brand-mark
+        logo_lab = QLabel("易")
+        logo_lab.setFixedSize(32, 32)
+        logo_lab.setAlignment(Qt.AlignCenter)
+        logo_lab.setObjectName("brandMark")
         tlay.addWidget(logo_lab)
-        tlay.addSpacing(4)
-        tlay.addWidget(logo)
+        word = QWidget()
+        wl = QVBoxLayout(word)
+        wl.setContentsMargins(4, 0, 0, 0)
+        wl.setSpacing(0)
+        logo = QLabel("易好网文短剧")
+        logo.setObjectName("brandName")
+        wl.addWidget(logo)
+        sub = QLabel("Yihao Shorts")
+        sub.setObjectName("brandSub")
+        wl.addWidget(sub)
+        tlay.addWidget(word)
+        tlay.addSpacing(10)
+        # 分段胶囊导航(对齐原版 layouts/default.vue 的 nav-segmented)
+        nav_wrap = QFrame()
+        nav_wrap.setObjectName("navSegWrap")
+        nav_lay = QHBoxLayout(nav_wrap)
+        nav_lay.setContentsMargins(3, 3, 3, 3)
+        nav_lay.setSpacing(2)
+        tlay.addWidget(nav_wrap)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        self._nav_defs = [("projects", "▦", "nav_projects")]
+        self._nav_defs = [("projects", "▦", "nav_projects"),
+                          ("face_swap", "☺", "nav_face_swap"),
+                          ("merger", "⧉", "nav_merger")]
         for key, icon, label_key in self._nav_defs:
-            b = QPushButton(f"{icon} {tr(label_key)}")
-            b.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
+            b = QPushButton(f"{icon}  {tr(label_key)}")
+            b.setObjectName("navSeg")
+            b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self._goto(k))
             self.nav_btns[key] = b
-            tlay.addWidget(b)
-        theme_btn = QPushButton("◐ " + tr("theme"))
-        theme_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
+            nav_lay.addWidget(b)
+        tlay.addWidget(nav_wrap)
+        tlay.addStretch(1)
+        theme_btn = QPushButton("◐")
+        theme_btn.setObjectName("headerIconBtn")
+        theme_btn.setToolTip(tr("theme"))
         theme_btn.clicked.connect(self._toggle_theme)
-        settings_btn = QPushButton("⚙️ " + tr("nav_settings"))
-        settings_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
+        settings_btn = QPushButton("⚙")
+        settings_btn.setObjectName("headerIconBtn")
+        settings_btn.setToolTip(tr("nav_settings"))
         settings_btn.clicked.connect(self._open_settings)
-        lang_btn = QPushButton("◎ " + tr("lang_short"))
-        lang_btn.setStyleSheet("color:#c8ccd4;background:transparent;border:none;padding:6px 10px;")
+        lang_btn = QPushButton("◎")
+        lang_btn.setObjectName("headerIconBtn")
+        lang_btn.setToolTip(tr("lang_short"))
         lang_btn.clicked.connect(self._switch_language)
         from .braille import BrailleSpinner, BrailleBar
         self.busy_spin = BrailleSpinner(color="#8b909a", size=16)
@@ -102,7 +123,12 @@ class MainWindow(QMainWindow):
         self.project_page = ProjectPage()
         self.episode_page = EpisodePage()
         self.clone_page = ClonePage()
-        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page):
+        from .face_swap_page import FaceSwapPage
+        from .merger_tool_page import MergerToolPage
+        self.face_swap_page = FaceSwapPage()
+        self.merger_page = MergerToolPage()
+        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
+                  self.face_swap_page, self.merger_page):
             self.stack.addWidget(p)
         root.addWidget(self.stack, 1)
 
@@ -141,7 +167,13 @@ class MainWindow(QMainWindow):
         """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""
         self.setWindowTitle(tr("app_title"))
         for key, icon, label_key in self._nav_defs:
-            self.nav_btns[key].setText(f"{icon} {tr(label_key)}")
+            self.nav_btns[key].setText(f"{icon}  {tr(label_key)}")
+        cur = self.stack.currentWidget()
+        for k, b in self.nav_btns.items():
+            page = {"projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
+                    "merger": getattr(self, "merger_page", None)}.get(k)
+            if page is not None:
+                b.setChecked(cur is page)
 
     def _refresh_ai_banner(self):
         """AI 服务就绪横幅:缺失时明确列出缺哪几类,点击直达设置。"""
@@ -158,8 +190,17 @@ class MainWindow(QMainWindow):
             self.banner.setVisible(False)
 
     def _goto(self, key: str):
-        self.stack.setCurrentWidget(self.projects_page)
-        self.projects_page.reload()
+        """分段导航切换:项目列表 / 换脸工具 / 合并工具,并同步胶囊选中态。"""
+        page = {"projects": self.projects_page,
+                "face_swap": getattr(self, "face_swap_page", None),
+                "merger": getattr(self, "merger_page", None)}.get(key)
+        if page is None:
+            return
+        for k, b in self.nav_btns.items():
+            b.setChecked(k == key)
+        self.stack.setCurrentWidget(page)
+        if hasattr(page, "reload"):
+            page.reload()
 
     def _new_project(self):
         dlg = NewProjectDialog(self)
@@ -187,6 +228,16 @@ class MainWindow(QMainWindow):
                 video_clone.upload_material(drama_id, "product", src["product_src"])
             if src.get("presenter_src"):
                 video_clone.upload_material(drama_id, "presenter", src["presenter_src"])
+        # 首集自动生成(对齐 auto-generate.ts):建完就后台跑一次对应 Agent,
+        # 用户不用手动点每一步;失败只记任务,不阻断建项目。clone 不生成(分镜来自参考视频拆解)。
+        if data["work_type"] != "video_clone":
+            try:
+                from ..core.preflight import ensure_ready
+                from ..pipeline import auto_generate
+                if ensure_ready("text", None):
+                    auto_generate.auto_generate_first_episode(drama_id, ep_id)
+            except Exception:  # noqa: BLE001 —— 自动生成失败不影响项目本身
+                pass
         self.projects_page.reload()
         self._open_drama(drama_id)
 
