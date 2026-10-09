@@ -83,7 +83,7 @@ class SettingsDialog(QDialog):
         manual = W.make_card()
         m_lay = QVBoxLayout(manual)
         m_lay.setContentsMargins(14, 12, 14, 12)
-        m_lay.addWidget(W.h2("手动模板"))
+        m_lay.addWidget(W.h2(tr("manual_templates")))
         m_lay.addWidget(W.muted("选择服务类型后,直接用模板填充推荐的 `provider / base URL / model`。"))
         chips = QHBoxLayout()
         for st in registry.SERVICE_TYPES:
@@ -538,7 +538,7 @@ class SettingsDialog(QDialog):
         from ..core import updater
         url = self._upd_result.get("url", "")
         if not url:
-            QMessageBox.warning(self, "更新失败", "没有可用的下载地址")
+            QMessageBox.warning(self, tr("update"), tr("update_failed_no_url"))
             return
         self.prog.setVisible(True)
         self.upd_btn.setEnabled(False)
@@ -556,10 +556,10 @@ class SettingsDialog(QDialog):
             self.prog.setVisible(False)
             self.upd_btn.setEnabled(True)
             if out.get("err"):
-                QMessageBox.warning(self, "更新失败", str(out["err"])[:300])
+                QMessageBox.warning(self, tr("update"), tr("update_failed") + str(out["err"])[:300])
                 return
             n = len(out.get("files", []))
-            if QMessageBox.question(self, "更新完成", f"已更新 {n} 个文件,立即重启生效吗?"):
+            if QMessageBox.question(self, tr("update"), tr("update_restart_q", n)):
                 updater.restart_app()
         th.finished.connect(finished)
         th.start()

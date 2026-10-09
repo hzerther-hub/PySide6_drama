@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QPushButton, QVBoxLayout)
@@ -36,10 +38,14 @@ class VariantsDialog(QDialog):
         self.label_edit.setPlaceholderText("变体标签(如 战斗服)")
         self.costume_edit = QLineEdit()
         self.costume_edit.setPlaceholderText("服装/造型描述(如 黑色劲装,束发,佩剑)")
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText("场景标签(逗号分隔,如 战斗,雨夜)")
+        self.tags_edit.setToolTip("分镜带这些标签时优先命中本变体(参考图里出现「战斗服」就选战斗变体)")
         add_btn = W.primary_btn("＋ " + tr("add"))
         add_btn.clicked.connect(self._add_variant)
         a_lay.addWidget(self.label_edit, 1)
         a_lay.addWidget(self.costume_edit, 2)
+        a_lay.addWidget(self.tags_edit, 1)
         a_lay.addWidget(add_btn)
         root.addWidget(add_box)
 
@@ -54,7 +60,8 @@ class VariantsDialog(QDialog):
             w = item.widget()
             if w:
                 w.deleteLater()
-        rows = db.q("SELECT * FROM character_variants WHERE character_id=? ORDER BY id DESC", (self.character["id"],))
+        rows = db.q("""SELECT * FROM character_variants WHERE character_id=?
+                       ORDER BY is_default DESC, sort_order ASC, id""", (self.character["id"],))
         for r in rows:
             self.list_lay.addWidget(self._row(dict(r)))
         if not rows:
@@ -103,10 +110,16 @@ class VariantsDialog(QDialog):
             self.label_edit.setFocus()
             return
         ts = db.now()
-        vid = db.ex("INSERT INTO character_variants(character_id,label,costume_desc,is_default,created_at) VALUES(?,?,?,0,?)",
-                    (self.character["id"], label, costume, ts))
+        tags = [t.strip() for t in self.tags_edit.text().replace("、", ",").split(",") if t.strip()]
+        nxt = (db.q1("SELECT COALESCE(MAX(sort_order),0)+1 n FROM character_variants WHERE character_id=?",
+                      (self.character["id"],))["n"])
+        vid = db.ex("""INSERT INTO character_variants(character_id,label,costume_desc,tags,
+                       is_default,sort_order,created_at) VALUES(?,?,?,?,0,?,?)""",
+                    (self.character["id"], label, costume,
+                     json.dumps(tags, ensure_ascii=False), nxt, ts))
         self.label_edit.clear()
         self.costume_edit.clear()
+        self.tags_edit.clear()
         # AI 生成变体提示词
         c = db.q1("SELECT * FROM characters WHERE id=?", (self.character["id"],))
         style = db.style_prompt(db.drama_style(c["drama_id"]))

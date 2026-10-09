@@ -111,8 +111,8 @@ class FaceSwapPage(QWidget):
 
     def _check_health(self):
         cfg_id = self.model_combo.currentData()
-        ok, msg = face_swap.health(config_id=cfg_id)
-        self.health_lab.setText(("✅ " if ok else "❌ ") + msg)
+        healthy, msg = face_swap.health(config_id=cfg_id)
+        self.health_lab.setText(("✅ " if healthy else "❌ ") + msg)
 
     def reload_models(self):
         self.model_combo.blockSignals(True)
@@ -148,8 +148,8 @@ class FaceSwapPage(QWidget):
             QMessageBox.information(self, tr("face_swap"), "请选择源脸照片")
             return
         cfg_id = self.model_combo.currentData()
-        ok, msg = face_swap.health(config_id=cfg_id)
-        if not ok:
+        healthy, msg = face_swap.health(config_id=cfg_id)
+        if not healthy:
             QMessageBox.warning(self, tr("face_swap"), msg)
             return
         all_faces = self.all_faces.isChecked()
@@ -164,8 +164,9 @@ class FaceSwapPage(QWidget):
                 outs.append((c, str(out)))
             return outs
         def done(tid, result, error):
-            if err:
-                err(tr("face_swap"))
+            if error:
+                err(str(error)[:200])
+                return
             for card, out in (result or []):
                 card.set_result(out)
         TASKMGR.submit("face_swap", job, done)

@@ -97,7 +97,8 @@ DDL: list[str] = [
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       character_id INTEGER NOT NULL,
       label TEXT NOT NULL, tags TEXT, costume_desc TEXT,
-      final_prompt TEXT, image_url TEXT, is_default INTEGER DEFAULT 0,
+      final_prompt TEXT, image_url TEXT, comic_image_url TEXT,
+      is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0,
       created_at TEXT NOT NULL)""",
     # 场景 / 道具
     """CREATE TABLE IF NOT EXISTS scenes (
@@ -339,6 +340,10 @@ def init_db() -> None:
     for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
                 "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL",
     "ALTER TABLE episodes ADD COLUMN duration REAL",
+                # 造型变体:补排序位与漫画风格图(对齐原版 variant-resolution 的 is_default/sort_order
+                # tie-break,以及 comic.ts 的「variant.comicImageUrl 优先」取图优先级)
+                "ALTER TABLE character_variants ADD COLUMN sort_order INTEGER DEFAULT 0",
+                "ALTER TABLE character_variants ADD COLUMN comic_image_url TEXT",
                 "ALTER TABLE ai_service_configs ADD COLUMN settings TEXT",
                 "ALTER TABLE dramas ADD COLUMN creative_description TEXT",
                 "ALTER TABLE dramas ADD COLUMN skip_creative INTEGER DEFAULT 0",

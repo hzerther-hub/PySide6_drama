@@ -159,11 +159,11 @@ class CharacterFaceSwapDialog(QDialog):
     def _restore_original(self):
         """恢复原貌:把快照写回角色形象(仅在存在快照时可用)。"""
         if not self._original_snapshot:
-            QMessageBox.information(self, tr("redraw"), "没有可恢复的原始形象快照")
+            QMessageBox.information(self, tr("face_swap"), tr("no_snapshot_to_restore"))
             return
         db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
               (self._original_snapshot["image_url"], db.now(), self.character["id"]))
-        QMessageBox.information(self, tr("redraw"), "已恢复原始形象")
+        QMessageBox.information(self, tr("face_swap"), tr("restored_original"))
 
     # ── 源脸 ──
     def _pick_source(self):
@@ -172,6 +172,36 @@ class CharacterFaceSwapDialog(QDialog):
             self.source_path = p
             self.src_img.setPixmap(W.pixmap_from_media(p, 236, 236))
             self.src_img.setStyleSheet("border:1px solid rgba(128,128,128,50);border-radius:8px;")
+            self._check_source_size(p)
+
+    # 源脸分辨率:≥512 可用;<512 警告;<256 直接判失败(换脸模型需要足够的人脸细节)
+    SIZE_FAIL_PX = 256
+    SIZE_WARN_PX = 512
+
+    def _check_source_size(self, path) -> bool:
+        """检查源脸分辨率并更新提示条;返回是否可用。"""
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap(str(path))
+        w, h = pm.width(), pm.height()
+        shortest = min(w, h)
+        if not w or not h:
+            self.size_tip.setText("")
+            self.go_btn.setEnabled(True)
+            return True
+        if shortest < self.SIZE_FAIL_PX:
+            self.size_tip.setText(tr("src_size_fail", shortest))
+            self.size_tip.setStyleSheet("color:#dc2626;font-size:12px;")
+            self.go_btn.setEnabled(False)
+            return False
+        if shortest < self.SIZE_WARN_PX:
+            self.size_tip.setText(tr("src_size_warn", w, h, shortest))
+            self.size_tip.setStyleSheet("color:#d97706;font-size:12px;")
+            self.go_btn.setEnabled(True)
+            return True
+        self.size_tip.setText(tr("src_size_ok", w, h))
+        self.size_tip.setStyleSheet("color:#16a34a;font-size:12px;")
+        self.go_btn.setEnabled(True)
+        return True
 
     def _use_other_character(self, _idx: int):
         sender = self.sender()
@@ -183,6 +213,7 @@ class CharacterFaceSwapDialog(QDialog):
             self.source_path = str(p)
             self.src_img.setPixmap(W.pixmap_from_media(url, 236, 236))
             self.src_img.setStyleSheet("border:1px solid rgba(128,128,128,50);border-radius:8px;")
+            self._check_source_size(p)
 
     # ── 换脸 ──
     def _run(self):
@@ -192,8 +223,8 @@ class CharacterFaceSwapDialog(QDialog):
         if not self.source_path:
             QMessageBox.information(self, tr("face_swap"), "请先选择源脸照片")
             return
-        ok, msg = face_swap.health(config_id=self.cfg_id)
-        if not ok:
+        healthy, msg = face_swap.health(config_id=self.cfg_id)
+        if not healthy:
             QMessageBox.warning(self, tr("face_swap"), msg)
             return
         self.go_btn.setEnabled(False)
@@ -255,7 +286,7 @@ class CharacterFaceSwapDialog(QDialog):
             self._batch_running = False
             self.batch_btn.setEnabled(True)
             if error:
-                QMessageBox.warning(self, tr("face_swap"), str(e_)[:400])
+                QMessageBox.warning(self, tr("face_swap"), str(error)[:400])
                 return
             self.results = result or {}
             okn = sum(1 for v in self.results.values() if v)
