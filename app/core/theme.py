@@ -50,6 +50,8 @@ QLabel#statusDot[state="ready"] { background: #e6f6ee; color: #16a34a; }
 QLabel#statusDot[state="pending"] { background: #fdf1e7; color: #e0794b; }
 QLabel#statusDot[state="failed"] { background: #fdecec; color: #dc2626; }
 QFrame#propsEmpty { border: 1px dashed #d5d9e0; border-radius: 10px; }
+QFrame#svcCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+QFrame#svcCard:hover { border-color: #f97316; }
 QFrame#emptyState { background: transparent; border: none; }
 /* ── 分镜工作台 ── */
 QFrame#taskList { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
@@ -148,6 +150,8 @@ QLabel#statusDot[state="ready"] { background: #16321f; color: #4ade80; }
 QLabel#statusDot[state="pending"] { background: #3a2a1c; color: #fbbf24; }
 QLabel#statusDot[state="failed"] { background: #3d1f22; color: #ff8b8f; }
 QFrame#propsEmpty { border: 1px dashed #3a3d46; border-radius: 10px; }
+QFrame#svcCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#svcCard:hover { border-color: #fb923c; }
 QFrame#emptyState { background: transparent; border: none; }
 QFrame#taskList { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
 QFrame#taskHead { background: transparent; border: none; border-bottom: 1px solid #2c2e35; }
