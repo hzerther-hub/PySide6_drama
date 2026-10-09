@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import Path
 
+import threading
+
 import requests
 
 from ..core import config
@@ -74,12 +76,26 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     prompt = apply_video_guards(prompt)
     cfg = registry.check_ready("video", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
+    # 契约校验:请求发出去之前就拒,让上游不明的 400 变成可读的本地原因(对齐 routes/tasks.ts)
+    from .video_contract import check_request
+    check_request(prompt, first_frame, reference_images, provider)
     headers = {"Content-Type": "application/json"}
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
     base = cfg["base_url"].rstrip("/")
     refs = [_local_to_data_url(r) for r in (reference_images or [])][:4]
 
+    # 提交 + 轮询整体走重试包装:永久错误立即失败,限流/队列满按长预算退避,
+    # 上游给了 retry_at 时间戳就睡到那一刻(最多跟 2 次)。
+    return _generate_with_retry(
+        lambda: _dispatch_once(cfg, base, headers, prompt, resolution, duration,
+                               first_frame, refs, config_id, reference_images or []))
+
+
+def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
+                   first_frame, refs, config_id, reference_images):
+    """按 provider 分发一次(不含重试)。"""
+    provider = cfg["provider"]
     if provider == "volcengine":
         body: dict = {"model": cfg["model"], "content": [
             {"type": "text", "text": prompt + f" --resolution {resolution}" +
@@ -452,8 +468,8 @@ def test_config(cfg: dict) -> tuple[bool, str]:
 RATE_LIMIT_BACKOFF_CAP_S = 120        # 退避封顶 2 分钟
 RATE_LIMIT_BACKOFF_BASE_S = 30        # 退避基数 30 秒
 VIDEO_CREATE_SPACING_S = 15           # 视频提交全局串行门:两次提交最小间隔 15 秒
-_video_chain: list = [None]            # 串行链
 _last_video_create_at: list = [0.0]
+_video_gate_lock = threading.Lock()
 
 
 def _is_rate_limited(exc) -> bool:
@@ -463,6 +479,44 @@ def _is_rate_limited(exc) -> bool:
             or "too many requests" in s or "rate limit" in s)
 
 
+def _generate_with_retry(fn, *, max_attempts: int = 6,
+                         rate_limit_budget_s: float = 900.0,
+                         create_budget_s: float = 180.0) -> tuple[Path, str]:
+    """提交 + 轮询的重试包装。
+
+    - **永久错误立即失败**:4xx(缺 Key / 参数错 / 模型下线)退避再试也没用,只是烧配额;
+    - **限流 / 队列满**:长预算(默认 15 分钟,实测 Agnes 拥塞会持续 20 分钟+)按 30s→45s→… 退避,封顶 2 分钟;
+    - **retry_at 时间戳**:上游明确给了「X 之后再试」就直接睡到那一刻,最多跟 2 次、单次 ≤24h;
+    - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游。
+    """
+    import time as _t
+    from .video_contract import is_permanent_error, retry_at_wait_seconds
+    gate = threading.Lock()
+    last_err = None
+    started = _t.time()
+    retry_at_follows = 0
+    for attempt in range(max_attempts):
+        with gate:
+            acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+        if is_permanent_error(last_err):
+            raise last_err                       # 4xx 快速失败,不进退避
+        elapsed = _t.time() - started
+        budget = rate_limit_budget_s if _is_rate_limited(last_err) else create_budget_s
+        wait = retry_at_wait_seconds(str(last_err), retry_at_follows)
+        if wait is not None:
+            retry_at_follows += 1
+        else:
+            wait = backoff_seconds(attempt)
+        if elapsed + wait > budget or attempt == max_attempts - 1:
+            raise last_err                       # 预算耗尽或次数用尽,按最后一次错误上报
+        _t.sleep(wait)
+    raise last_err  # pragma: no cover
+
+
 def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:
     """退避计算:优先 Retry-After,否则 30s × 1.5^n,封顶 120s。"""
     if retry_after:
@@ -470,23 +524,59 @@ def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:
     return min(RATE_LIMIT_BACKOFF_BASE_S * (1.5 ** min(attempt, 6)), RATE_LIMIT_BACKOFF_CAP_S)
 
 
-def pass_video_create_gate():
-    """视频提交全局串行门(对齐原版 passVideoCreateGate):包住提交全程。
+def acquire_video_create_gate() -> None:
+    """视频提交全局串行门:阻塞到距上次提交满 15 秒后放行,并更新时刻。
 
-    多任务并发时按 15 秒最小间隔排队,避免同时踩上游限流。
+    对齐原版 passVideoCreateGate —— 多任务并发时按最小间隔排队,避免同时踩上游限流。
+    原实现返回线程让调用方 join,但线程从未 start,等于门形同虚设;改为直接阻塞获取。
     """
-    import threading
+    with _video_gate_lock:
+        wait = _last_video_create_at[0] + VIDEO_CREATE_SPACING_S - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _last_video_create_at[0] = time.time()
+
+
+def _generate_with_retry(fn, *, max_attempts: int = 6,
+                         rate_limit_budget_s: float = 900.0,
+                         create_budget_s: float = 180.0) -> tuple[Path, str]:
+    """提交 + 轮询的重试包装。
+
+    - **永久错误立即失败**:4xx(缺 Key / 参数错 / 模型下线)退避再试也没用,只是烧配额;
+    - **限流 / 队列满**:长预算(默认 15 分钟,实测 Agnes 拥塞会持续 20 分钟+)按 30s→45s→… 退避,封顶 2 分钟;
+    - **retry_at 时间戳**:上游明确给了「X 之后再试」就直接睡到那一刻,最多跟 2 次、单次 ≤24h;
+    - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游。
+    """
     import time as _t
-    lock = threading.Lock()
+    from .video_contract import is_permanent_error, retry_at_wait_seconds
+    gate = threading.Lock()
+    last_err = None
+    started = _t.time()
+    retry_at_follows = 0
+    for attempt in range(max_attempts):
+        with gate:
+            acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+        if is_permanent_error(last_err):
+            raise last_err                       # 4xx 快速失败,不进退避
+        elapsed = _t.time() - started
+        budget = rate_limit_budget_s if _is_rate_limited(last_err) else create_budget_s
+        wait = retry_at_wait_seconds(str(last_err), retry_at_follows)
+        if wait is not None:
+            retry_at_follows += 1
+        else:
+            wait = backoff_seconds(attempt)
+        if elapsed + wait > budget or attempt == max_attempts - 1:
+            raise last_err                       # 预算耗尽或次数用尽,按最后一次错误上报
+        _t.sleep(wait)
+    raise last_err  # pragma: no cover
 
-    def run():
-        with lock:
-            wait = _last_video_create_at[0] + VIDEO_CREATE_SPACING_S - _t.time()
-            if wait > 0:
-                _t.sleep(wait)
-            _last_video_create_at[0] = _t.time()
 
-    prev = _video_chain[0] or (lambda: None)
-    nxt = threading.Thread(target=lambda: (prev(), run()))
-    _video_chain[0] = nxt
-    return nxt
+def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:
+    """退避计算:优先 Retry-After,否则 30s × 1.5^n,封顶 120s。"""
+    if retry_after:
+        return min(float(retry_after), RATE_LIMIT_BACKOFF_CAP_S)
+    return min(RATE_LIMIT_BACKOFF_BASE_S * (1.5 ** min(attempt, 6)), RATE_LIMIT_BACKOFF_CAP_S)

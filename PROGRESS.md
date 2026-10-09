@@ -724,3 +724,52 @@ novel→`episodes.content`、drama→`episodes.script_content`、comic→`comic_
 asset_dialogs 剩余约 55、project_page 剩余约 45、settings_dialog 49、book_import_dialog 36、
 new_project_dialog 30、ai_edit_dialog 37 等)。`ui_strings.py` 的结构就是为此准备的,
 后续按同一格式往 `S` 里加即可,不需要再改调用点。
+
+## 2026-10-09(第 32 轮:修 bug + 视频契约校验与重试治理)
+> 用户:「分析一下。建一个计划进行修改」→ 确认四轨并行:先修 bug、后端契约与重试、i18n 15 语言、
+> 界面复刻(设置卡片 + 换脸向导)。本轮记录批次 0 与批次 1。
+
+### 批次 0:修 4 个真 bug + 补迁移
+- `face_swap_page`:done 回调里 `if err:` 判的是从 toast 导入的**函数**(恒为真),
+  导致每次换脸成功都弹错误 → 改 `if error:`
+- `face_swap_page`×2 / `character_face_swap_dialog`×1:`ok, msg = face_swap.health(...)`
+  把 toast 导入的 `ok` **覆盖**掉 → 局部改名 `healthy, msg`
+- `character_face_swap_dialog`:批量回调里 `str(e_)` 引用**未定义名**,批量失败直接 NameError
+- `character_face_swap_dialog`:`tr("redraw")` 被当对话框标题,该键不存在
+- 该弹窗的 `size_tip` 声明后**从未赋值**(分辨率告警是死的):实现三档
+  —— <256px 硬失败(禁用执行键)/ <512px 警告 / 其余合格
+- **迁移**:`character_variants` 补 `sort_order` / `comic_image_url` 两列;
+  `tags` 列此前**没有任何写入方** → 变体弹窗新增「场景标签」输入,排序改
+  `ORDER BY is_default DESC, sort_order ASC, id`(对齐 variant-resolution 的 tie-break)
+- 设置页 3 处 QMessageBox 裸中文 → 收进 `ui_strings` 词典(15 语言)
+
+### 批次 1:视频请求契约校验 + 错误分类 + retry_at 跟随
+**新增 `app/ai/video_contract.py`**(纯函数、不碰网络,可用构造请求逐条断言):
+- `normalize_video_request()`:兼容本仓扁平参数与官方 Wan 3.0 的 `input.media[] / parameters{}`;
+  七种 media type;`first_frame/last_frame/file/link` 各至多 1 项
+- `validate_video_request()`:上限表与规则顺序**逐条对齐** `routes/tasks.ts` ——
+  aliyun 图片≤10/视频≤5/音频≤5/合计≤20、尾帧须配首帧、file 与 link 互斥、
+  首尾帧不得与 reference_* 混用(**混用检查在合计检查之前**,与参考同序);
+  通用 图片≤9/视频≤3/音频≤3、有音频须配图或视频;prompt 空且无素材直接拒
+- `is_fallbackable_error()`:限流/队列满/网关抖动 → 可恢复;4xx(缺 Key/参数错/模型下线)
+  → 不可回退,`is_permanent_error()` 另判 4xx 快速失败(408/409/425/429 除外)
+- `parse_retry_at()` / `retry_at_wait_seconds()`:解析上游
+  `Please try again after <datetime>`(兼容 `UTC`/`Z`/无后缀),睡到那一刻,
+  **最多跟 2 次、单次 ≤24h、额外 +5s 余量**,超限直接放弃不挂死
+- `fallback_enabled()`:跨 provider 回退**默认关**(参考项目已被用户策略压成单点,
+  不悄悄切模型掩盖真问题),需要时用 `YIHAO_VIDEO_FALLBACK=1` 打开
+
+**接入点**:`generate_video()` 分发前调 `check_request()`,超限/空 prompt 在**请求发出前**就给出
+可读本地原因;分发体拆成 `_dispatch_once()` + `_generate_with_retry()` 包装。
+
+**顺带修第三处死代码**:限流治理的 `_is_rate_limited` / `backoff_seconds` /
+`pass_video_create_gate` **此前定义了但全仓无人调用**。其中串行门实现是
+「造一个线程返回给调用方 join」,而线程**从未 start** —— 门形同虚设。
+重写为 `acquire_video_create_gate()`:阻塞到距上次提交满 15 秒再放行,并删除旧函数。
+`_generate_with_retry` 现在真的生效:4xx 一次即失败、限流按长预算退避、
+retry_at 直接跟随、每次提交都过串行门。
+
+**验证**:契约校验 12 条规则(含边界:20 项放行 / 21 项拒绝)、
+错误分类 9 种 HTTP 码、retry_at 5 种写法 + 2 次上限 + 24h 上限,全部断言通过;
+重试行为用桩函数验证 4xx 一次失败 / 503 后成功 / 持续 503 预算耗尽 / retry_at 跟随;
+串行门 3 线程并发提交间隔实测均 ≥300ms。亮暗 × 2 项目 × 6 步骤全绿。
