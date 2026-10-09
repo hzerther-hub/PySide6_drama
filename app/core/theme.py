@@ -13,6 +13,193 @@ MONO_STACK = "ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, 'Fira Code', Con
 
 _QSS_BODY = None  # 字体栈直接内联进两套 QSS
 
+# 制作面板:资产卡 / 分镜工作台 / 漫画格(对齐原版 episode.vue 的 .asset-* .video-* .comic-*)
+ASSET_QSS_LIGHT = """
+QWidget#prodBar { background: transparent; }
+QWidget#prodContent { background: transparent; }
+QLabel#sectionTitle { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: #1f2329; }
+QPushButton#addBtn { border: 1px dashed #4b6ef5; color: #4b6ef5; background: transparent;
+  border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+QPushButton#addBtn:hover { background: #eef1fe; }
+QPushButton#segTab { background: transparent; border: none; border-radius: 999px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600; color: #4e5969; }
+QPushButton#segTab:checked { background: #ffffff; color: #1f2329; font-weight: 700; }
+QFrame#segWrap { background: #f2f3f5; border-radius: 999px; }
+QLabel#monoTag { background: #f2f3f5; border-radius: 4px; padding: 1px 7px;
+  color: #4e5969; font-family: monospace; font-size: 11px; }
+QFrame#assetCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+QFrame#assetCard:hover { border-color: #4b6ef5; }
+QLabel#coverBadge { background: rgba(0,0,0,0.55); color: #ffffff; border-radius: 4px;
+  padding: 1px 6px; font-size: 10px; }
+QLabel#coverBadge[state="ready"] { background: #16a34acc; }
+QLabel#coverBadge[state="pending"] { background: #e0794bcc; }
+QLabel#coverTag { background: rgba(0,0,0,0.62); color: #ffffff; border-radius: 4px;
+  padding: 0 5px; font-size: 9px; }
+QLabel#placeholderIcon { color: #c0c6cf; font-size: 22px; }
+QLabel#roleTag { border-radius: 4px; padding: 1px 7px; font-size: 11px;
+  background: #eef1fe; color: #4b6ef5; }
+QLabel#roleTag[role="lead"] { background: #fdecec; color: #dc2626; }
+QLabel#roleTag[role="supporting"] { background: #eaf1fe; color: #2563eb; }
+QLabel#roleTag[role="extra"] { background: #f2f3f5; color: #6b7280; }
+QFrame#finalPrompt { border-top: 1px solid #eef0f3; }
+QLabel#finalLabel { font-size: 10px; color: #86909c; letter-spacing: 1px; }
+QLabel#finalText { font-size: 11px; color: #4e5969; }
+QLabel#statusDot { border-radius: 4px; padding: 0 6px; font-size: 11px;
+  background: #f2f3f5; color: #86909c; }
+QLabel#statusDot[state="ready"] { background: #e6f6ee; color: #16a34a; }
+QLabel#statusDot[state="pending"] { background: #fdf1e7; color: #e0794b; }
+QLabel#statusDot[state="failed"] { background: #fdecec; color: #dc2626; }
+QFrame#propsEmpty { border: 1px dashed #d5d9e0; border-radius: 10px; }
+QFrame#emptyState { background: transparent; border: none; }
+/* ── 分镜工作台 ── */
+QFrame#taskList { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+QFrame#taskHead { background: transparent; border: none; border-bottom: 1px solid #e4e7ec; }
+QLabel#taskTitle { font-size: 13px; font-weight: 800; }
+QPushButton#metricPill { background: #f2f3f5; border: none; border-radius: 999px;
+  padding: 2px 9px; font-size: 11px; font-weight: 700; color: #4e5969; }
+QPushButton#metricPill[state="pending"] { background: #eef1fe; color: #4b6ef5; }
+QPushButton#metricPill[state="done"] { background: #e6f6ee; color: #16a34a; }
+QPushButton#metricPill[state="failed"] { background: #fdecec; color: #dc2626; }
+QPushButton#metricPill:checked { border: 2px solid #4b6ef5; }
+QFrame#taskRow { background: transparent; border: none; border-top: 1px solid #f2f3f5; }
+QFrame#taskRow:hover { background: #f7f8fa; }
+QFrame#taskRow[state="selected"] { background: #eef1fe; }
+QFrame#taskRow[state="done"] { background: #f7fdf9; }
+QFrame#taskRow[state="failed"] { background: #fdf6f6; }
+QLabel#taskIndex { background: rgba(0,0,0,0.56); color: #ffffff; border-radius: 3px;
+  padding: 0 4px; font-family: monospace; font-size: 9px; }
+QLabel#taskName { font-size: 12px; font-weight: 700; }
+QLabel#taskMeta { font-size: 11px; color: #86909c; }
+QLabel#taskError { font-size: 11px; color: #dc2626; }
+QFrame#inspector { background: #f7f8fa; border: 1px solid #e4e7ec; border-radius: 10px; }
+QFrame#playerPanel { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+QLabel#playerStage { background: #14161a; color: #b8bcc4; border-radius: 8px; }
+QLabel#inspectorLabel { font-size: 12px; font-weight: 700; }
+QLabel#heroLabel { font-size: 13px; font-weight: 700; color: #4b6ef5; border-left: 3px solid #4b6ef5; }
+QFrame#paramCard { background: #eef1fe; border: 1px solid #d5dfff; border-radius: 8px; }
+QLabel#effective { background: #ffffff; border: 1px solid #4b6ef5; border-radius: 6px;
+  padding: 3px 8px; font-family: monospace; font-size: 11px; color: #4b6ef5; }
+QPushButton#refTab { background: transparent; border: none; border-bottom: 2px solid transparent;
+  padding: 5px 10px 7px; font-size: 12px; font-weight: 600; color: #86909c; }
+QPushButton#refTab:checked { color: #1f2329; border-bottom-color: #4b6ef5; }
+QFrame#refCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 8px; }
+QFrame#refCard[bound="1"] { border-color: #4b6ef5; }
+QLabel#refState { font-size: 11px; color: #86909c; }
+QLabel#refState[ok="1"] { color: #16a34a; }
+QLabel#chip { background: #eef1fe; color: #4b6ef5; border-radius: 999px; padding: 1px 8px; font-size: 11px; }
+QFrame#historyStrip { background: transparent; border: none; border-bottom: 1px solid #e4e7ec; }
+/* ── 漫画格 ── */
+QFrame#comicCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+QFrame#comicCard[state="failed"] { border-color: #dc2626; }
+QLabel#comicIndex { background: rgba(0,0,0,0.5); color: #ffffff; border-radius: 3px;
+  padding: 0 5px; font-family: monospace; font-size: 10px; }
+QLabel#comicThumb { background: #f2f3f5; color: #c0c6cf; border-radius: 8px; font-size: 18px; }
+QLabel#comicDialogue { background: #eef1fe; border-left: 2px solid #4b6ef5; border-radius: 4px;
+  padding: 3px 7px; font-size: 11px; color: #1f2329; }
+QFrame#narrationBox { background: rgba(244,241,236,0.5); border: 1px dashed #d5d9e0; border-radius: 6px; }
+QLabel#narrationHead { font-size: 11px; color: #86909c; letter-spacing: 1px; }
+QLabel#narrationHint { font-size: 10px; color: #a8b0bb; }
+QLabel#comicError { font-size: 11px; color: #dc2626; }
+QFrame#stitchBox { background: #f7f8fa; border: 1px solid #e4e7ec; border-radius: 10px; }
+QLabel#refThumb { font-size:22px; background:#f2f3f5; color:#c0c6cf; border-radius:6px; }
+QFrame#comicThumbBox { background:#f2f3f5; border:none; border-top-left-radius:10px;
+  border-top-right-radius:10px; }
+QFrame#videoThumb { background:#f2f3f5; border-radius:4px; }
+QLabel#videoThumbIcon { color:#86909c; background:transparent; }
+"""
+
+ASSET_QSS_DARK = """
+QWidget#prodBar { background: transparent; }
+QWidget#prodContent { background: transparent; }
+QLabel#sectionTitle { font-size: 12px; font-weight: 800; letter-spacing: 1px; color: #e8eaed; }
+QPushButton#addBtn { border: 1px dashed #6b87f8; color: #8ba0ff; background: transparent;
+  border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+QPushButton#addBtn:hover { background: #2b3252; }
+QPushButton#segTab { background: transparent; border: none; border-radius: 999px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600; color: #8b909a; }
+QPushButton#segTab:checked { background: #202126; color: #f2f3f5; font-weight: 700; }
+QFrame#segWrap { background: #202126; border-radius: 999px; }
+QLabel#monoTag { background: #2a2c33; border-radius: 4px; padding: 1px 7px;
+  color: #b8bcc4; font-family: monospace; font-size: 11px; }
+QFrame#assetCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#assetCard:hover { border-color: #6b87f8; }
+QLabel#coverBadge { background: rgba(0,0,0,0.55); color: #ffffff; border-radius: 4px;
+  padding: 1px 6px; font-size: 10px; }
+QLabel#coverBadge[state="ready"] { background: #16a34acc; }
+QLabel#coverBadge[state="pending"] { background: #e0794bcc; }
+QLabel#coverTag { background: rgba(0,0,0,0.62); color: #ffffff; border-radius: 4px;
+  padding: 0 5px; font-size: 9px; }
+QLabel#placeholderIcon { color: #5a5d66; font-size: 22px; }
+QLabel#roleTag { border-radius: 4px; padding: 1px 7px; font-size: 11px;
+  background: #2b3252; color: #8ba0ff; }
+QLabel#roleTag[role="lead"] { background: #4a2226; color: #ff8b8f; }
+QLabel#roleTag[role="supporting"] { background: #22304d; color: #7aa2f7; }
+QLabel#roleTag[role="extra"] { background: #2a2c33; color: #8b909a; }
+QFrame#finalPrompt { border-top: 1px solid #2c2e35; }
+QLabel#finalLabel { font-size: 10px; color: #5a5d66; letter-spacing: 1px; }
+QLabel#finalText { font-size: 11px; color: #b8bcc4; }
+QLabel#statusDot { border-radius: 4px; padding: 0 6px; font-size: 11px;
+  background: #2a2c33; color: #8b909a; }
+QLabel#statusDot[state="ready"] { background: #16321f; color: #4ade80; }
+QLabel#statusDot[state="pending"] { background: #3a2a1c; color: #fbbf24; }
+QLabel#statusDot[state="failed"] { background: #3d1f22; color: #ff8b8f; }
+QFrame#propsEmpty { border: 1px dashed #3a3d46; border-radius: 10px; }
+QFrame#emptyState { background: transparent; border: none; }
+QFrame#taskList { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#taskHead { background: transparent; border: none; border-bottom: 1px solid #2c2e35; }
+QLabel#taskTitle { font-size: 13px; font-weight: 800; }
+QPushButton#metricPill { background: #2a2c33; border: none; border-radius: 999px;
+  padding: 2px 9px; font-size: 11px; font-weight: 700; color: #b8bcc4; }
+QPushButton#metricPill[state="pending"] { background: #2b3252; color: #8ba0ff; }
+QPushButton#metricPill[state="done"] { background: #16321f; color: #4ade80; }
+QPushButton#metricPill[state="failed"] { background: #3d1f22; color: #ff8b8f; }
+QPushButton#metricPill:checked { border: 2px solid #6b87f8; }
+QFrame#taskRow { background: transparent; border: none; border-top: 1px solid #26282e; }
+QFrame#taskRow:hover { background: #26282e; }
+QFrame#taskRow[state="selected"] { background: #22263a; }
+QFrame#taskRow[state="done"] { background: #182018; }
+QFrame#taskRow[state="failed"] { background: #241b1d; }
+QLabel#taskIndex { background: rgba(0,0,0,0.56); color: #ffffff; border-radius: 3px;
+  padding: 0 4px; font-family: monospace; font-size: 9px; }
+QLabel#taskName { font-size: 12px; font-weight: 700; }
+QLabel#taskMeta { font-size: 11px; color: #8b909a; }
+QLabel#taskError { font-size: 11px; color: #ff8b8f; }
+QFrame#inspector { background: #1a1c20; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#playerPanel { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QLabel#playerStage { background: #0e0f12; color: #8b909a; border-radius: 8px; }
+QLabel#inspectorLabel { font-size: 12px; font-weight: 700; }
+QLabel#heroLabel { font-size: 13px; font-weight: 700; color: #8ba0ff; border-left: 3px solid #6b87f8; }
+QFrame#paramCard { background: #1e2338; border: 1px solid #2f3a5e; border-radius: 8px; }
+QLabel#effective { background: #202126; border: 1px solid #6b87f8; border-radius: 6px;
+  padding: 3px 8px; font-family: monospace; font-size: 11px; color: #8ba0ff; }
+QPushButton#refTab { background: transparent; border: none; border-bottom: 2px solid transparent;
+  padding: 5px 10px 7px; font-size: 12px; font-weight: 600; color: #8b909a; }
+QPushButton#refTab:checked { color: #f2f3f5; border-bottom-color: #6b87f8; }
+QFrame#refCard { background: #202126; border: 1px solid #2c2e35; border-radius: 8px; }
+QFrame#refCard[bound="1"] { border-color: #6b87f8; }
+QLabel#refState { font-size: 11px; color: #8b909a; }
+QLabel#refState[ok="1"] { color: #4ade80; }
+QLabel#chip { background: #2b3252; color: #8ba0ff; border-radius: 999px; padding: 1px 8px; font-size: 11px; }
+QFrame#historyStrip { background: transparent; border: none; border-bottom: 1px solid #2c2e35; }
+QFrame#comicCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#comicCard[state="failed"] { border-color: #ff8b8f; }
+QLabel#comicIndex { background: rgba(0,0,0,0.5); color: #ffffff; border-radius: 3px;
+  padding: 0 5px; font-family: monospace; font-size: 10px; }
+QLabel#comicThumb { background: #1a1c20; color: #5a5d66; border-radius: 8px; font-size: 18px; }
+QLabel#comicDialogue { background: #232740; border-left: 2px solid #6b87f8; border-radius: 4px;
+  padding: 3px 7px; font-size: 11px; color: #e8eaed; }
+QFrame#narrationBox { background: rgba(244,241,236,0.04); border: 1px dashed #3a3d46; border-radius: 6px; }
+QLabel#narrationHead { font-size: 11px; color: #8b909a; letter-spacing: 1px; }
+QLabel#narrationHint { font-size: 10px; color: #6b7280; }
+QLabel#comicError { font-size: 11px; color: #ff8b8f; }
+QFrame#stitchBox { background: #1a1c20; border: 1px solid #2c2e35; border-radius: 10px; }
+QLabel#refThumb { font-size:22px; background:#1a1c20; color:#5a5d66; border-radius:6px; }
+QFrame#comicThumbBox { background:#1a1c20; border:none; border-top-left-radius:10px;
+  border-top-right-radius:10px; }
+QFrame#videoThumb { background:#1a1c20; border-radius:4px; }
+QLabel#videoThumbIcon { color:#8b909a; background:transparent; }
+"""
+
 # 制作流水线侧栏(对齐原版 episode.vue 的 .sidebar / .pipe-section / .pipe-item /
 # .sidebar-progress)。用 objectName 承载,亮暗两套各一份,避免组件里写死颜色。
 SIDEBAR_QSS_LIGHT = """
@@ -115,7 +302,11 @@ QStatusBar { background: #f5f6f8; color: #86909c; }
 QSplitter::handle { background: #e4e7ec; }
 QToolTip { background: #ffffff; color: #1f2329; border: 1px solid #d5d9e0; padding: 4px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; }
-""" + SIDEBAR_QSS_LIGHT
+QPushButton#filterChip { background: #f2f3f5; border: none; border-radius: 999px;
+  padding: 6px 14px; font-size: 12px; font-weight: 600; color: #4e5969; }
+QPushButton#filterChip:hover { background: #e9ebef; color: #1f2329; }
+QPushButton#filterChip:checked { background: #1f2329; color: #ffffff; }
+""" + ASSET_QSS_LIGHT + SIDEBAR_QSS_LIGHT
 
 DARK_QSS = """
 * { font-family: """ + FONT_STACK + """; font-size: 13px; color: #e8eaed; }
@@ -152,10 +343,31 @@ QMenu { background: #202126; border: 1px solid #3a3d46; border-radius: 8px; padd
 QMenu::item { padding: 6px 22px; border-radius: 6px; }
 QMenu::item:selected { background: #33364a; }
 QStatusBar { background: #17181c; color: #8b909a; }
+QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; }
+QPushButton#filterChip { background: #2a2c33; border: none; border-radius: 999px;
+  padding: 6px 14px; font-size: 12px; font-weight: 600; color: #b8bcc4; }
+QPushButton#filterChip:hover { background: #33364a; color: #f2f3f5; }
+QPushButton#filterChip:checked { background: #4b6ef5; color: #ffffff; }
 QToolTip { background: #26282e; color: #e8eaed; border: 1px solid #3a3d46; padding: 4px; }
-""" + SIDEBAR_QSS_DARK
+""" + ASSET_QSS_DARK + SIDEBAR_QSS_DARK
 
 
 def apply_theme(app, mode: str = "light") -> None:
-    from PySide6.QtWidgets import QApplication  # noqa: F401
+    """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
+    from PySide6.QtGui import QColor, QPalette
+    dark = mode == "dark"
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor("#17181c" if dark else "#f5f6f8"))
+    pal.setColor(QPalette.WindowText, QColor("#e8eaed" if dark else "#1f2329"))
+    pal.setColor(QPalette.Base, QColor("#1d1f24" if dark else "#ffffff"))
+    pal.setColor(QPalette.AlternateBase, QColor("#202126" if dark else "#f7f8fa"))
+    pal.setColor(QPalette.Text, QColor("#e8eaed" if dark else "#1f2329"))
+    pal.setColor(QPalette.Button, QColor("#26282e" if dark else "#ffffff"))
+    pal.setColor(QPalette.ButtonText, QColor("#e8eaed" if dark else "#1f2329"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#26282e" if dark else "#ffffff"))
+    pal.setColor(QPalette.ToolTipText, QColor("#e8eaed" if dark else "#1f2329"))
+    pal.setColor(QPalette.Highlight, QColor("#4b6ef5"))
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    pal.setColor(QPalette.Link, QColor("#8ba0ff" if dark else "#4b6ef5"))
+    app.setPalette(pal)
     app.setStyleSheet(DARK_QSS if mode == "dark" else LIGHT_QSS)

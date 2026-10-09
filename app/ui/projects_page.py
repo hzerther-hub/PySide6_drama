@@ -1,33 +1,34 @@
 # -*- coding: utf-8 -*-
-"""项目启动台:统计/筛选/搜索/排序/项目卡(状态标记+更多菜单)/新建/删除。"""
+"""项目启动台:对齐原版 pages/index.vue 的 header / toolbar / 项目卡网格。"""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QDateTime, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMenu, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel,
+                               QLineEdit, QMenu, QPushButton, QScrollArea, QVBoxLayout,
+                               QWidget)
 
 from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
-from .toast import err, ok
+from .toast import ok
 
-WT_LABEL = {"novel": "§ " + tr("wt_novel"), "drama": "▷ " + tr("wt_drama"),
-            "comic": "▤ " + tr("wt_comic"), "promotion": "◈ " + tr("wt_promotion"),
-            "video_clone": "▷ " + tr("wt_clone")}
+WT_LABEL = {"novel": tr("wt_novel"), "drama": tr("wt_drama"),
+            "comic": tr("wt_comic"), "promotion": tr("wt_promotion"),
+            "video_clone": tr("wt_clone")}
 
 STATUS_META = {
     "pending": ("待开始", "#86909c"),
-    "active": ("进行中", "#4b6ef5"),
-    "completed": ("已完成", "#16a34a"),
+    "active": ("进行中", "#16a34a"),
+    "completed": ("已完成", "#4b6ef5"),
 }
+FILTERS = [("all", "全部"), ("draft", "待开始"), ("active", "进行中"), ("completed", "已完成")]
+FILTER_DB = {"all": None, "draft": "pending", "active": "active", "completed": "completed"}
 
 
 def _fmt_ago(ts: str) -> str:
-    """相对时间(对齐原版:刚刚 / N分钟前 / N小时前 / M/D)。"""
+    """相对时间(对齐原版:刚刚 / N分钟前 / N小时前 / N天前 / M/D)。"""
     if not ts:
         return "-"
     try:
@@ -46,6 +47,31 @@ def _fmt_ago(ts: str) -> str:
     return f"{dt.month}/{dt.day}"
 
 
+def _dot_icon(color: str):
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+    pm = QPixmap(12, 12)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor(color))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(3, 3, 6, 6)
+    p.end()
+    return QIcon(pm)
+
+
+def _pill(text: str, tone: str = "") -> QLabel:
+    """统计胶囊(对齐 .hero-stats 里的 .tag)。"""
+    lab = QLabel(text)
+    style = "background:#f2f3f5; color:#4e5969;"
+    if tone == "success":
+        style = "background:#e6f6ee; color:#16a34a;"
+    elif tone == "accent":
+        style = "background:#eef1fe; color:#4b6ef5;"
+    lab.setStyleSheet(style + " border-radius:999px; padding:3px 10px; font-size:11px;")
+    return lab
+
+
 class ProjectCard(QFrame):
     open_requested = Signal(int)
     delete_requested = Signal(int, str)
@@ -56,65 +82,114 @@ class ProjectCard(QFrame):
         self.setObjectName("card")
         self.drama_id = drama["id"]
         self._title = drama["title"]
-        self.setFixedHeight(196)
+        self.setFixedSize(260, 244)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("点击打开项目")
+        self.setToolTip(tr("click_open_project"))
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        # 顶部:封面首字母 + 画幅角标 + 状态徽标 + 更多
-        top = QHBoxLayout()
-        cover = W.avatar(drama["title"], 46)
-        top.addWidget(cover)
-        ratio = W.tag(drama["aspect_ratio"])
-        top.addWidget(ratio)
-        top.addStretch(1)
-        self.status_btn = QPushButton("●")
-        self.status_btn.setFixedWidth(56)
+        # 封面块 2.1:1(对齐 .project-cover)
+        cover = QFrame()
+        cover.setFixedHeight(112)
+        cover.setStyleSheet(
+            "QFrame#cover{background:linear-gradient(135deg,#eef1fe 0%,#f7f8fa 70%);"
+            "border:none; border-bottom:1px solid #e4e7ec; border-top-left-radius:10px;"
+            "border-top-right-radius:10px;}")
+        cover.setObjectName("cover")
+        cl = QVBoxLayout(cover)
+        cl.setContentsMargins(10, 10, 10, 10)
+        if drama.get("thumbnail"):
+            img = QLabel()
+            img.setAlignment(Qt.AlignCenter)
+            img.setPixmap(W.pixmap_from_media(drama["thumbnail"], 240, 92))
+            cl.addWidget(img)
+        else:
+            init = QLabel((drama["title"] or "?")[:1].upper())
+            init.setAlignment(Qt.AlignCenter)
+            init.setStyleSheet(
+                "color:#4b6ef5; opacity:0.55; font-size:30px; font-weight:700; border:none;")
+            cl.addWidget(init)
+        cover_ratios = QHBoxLayout()
+        cover_ratios.addStretch(1)
+        if drama.get("aspect_ratio") and drama["aspect_ratio"] != "adaptive":
+            rc = QLabel(drama["aspect_ratio"])
+            rc.setStyleSheet(
+                "background:#ffffff; color:#86909c; border:1px solid #e4e7ec;"
+                "border-radius:5px; padding:2px 7px; font-family:monospace; font-size:10px;")
+            cover_ratios.addWidget(rc)
+        cl.addLayout(cover_ratios)
+        # 状态徽标(左上)+ 更多(右上,常显;QSS 做不到 hover 才显)
+        marks = QHBoxLayout()
+        self.status_btn = QPushButton()
         self.status_btn.setCursor(Qt.PointingHandCursor)
+        self.status_btn.setFixedHeight(22)
         self._apply_status_style(drama.get("status") or "pending")
         self.status_btn.clicked.connect(self._status_menu)
-        self.status_btn.pressed.connect(lambda: setattr(self, "_btn_clicked", True))
-        top.addWidget(self.status_btn)
-        more = QPushButton("···")
-        more.setFixedWidth(34)
+        marks.addWidget(self.status_btn)
+        marks.addStretch(1)
+        more = QPushButton("⋯")
+        more.setFixedSize(28, 22)
         more.setCursor(Qt.PointingHandCursor)
+        more.setStyleSheet(
+            "QPushButton{background:#ffffff;border:1px solid #e4e7ec;border-radius:6px;"
+            "color:#4e5969;padding:0;}")
         more.clicked.connect(self._menu)
-        more.pressed.connect(lambda: setattr(self, "_btn_clicked", True))
-        top.addWidget(more)
-        lay.addLayout(top)
+        marks.addWidget(more)
+        cl.addLayout(marks)
+        lay.addWidget(cover)
 
+        # 主体
+        body = QWidget()
+        body.setStyleSheet("border:none;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 12, 14, 12)
+        bl.setSpacing(0)
         title = W.h2(drama["title"])
-        title.setWordWrap(False)
-        lay.addWidget(title)
-
+        title.setStyleSheet("font-size:14px; font-weight:600;")
+        title.setToolTip(drama["title"])
+        bl.addWidget(title)
         chips = QHBoxLayout()
         chips.setSpacing(6)
         chips.addWidget(W.tag(WT_LABEL.get(drama["work_type"], drama["work_type"])))
+        nm = db.jload(drama["novel_meta"], {}) or {}
+        if (nm.get("imitated_from") or {}).get("drama_id"):
+            imi = W.tag(tr("imitated"))
+            imi.setStyleSheet(
+                "background:rgba(168,85,247,0.08); color:#a855f7;"
+                "border:1px solid rgba(168,85,247,0.45); border-radius:4px;"
+                "padding:2px 8px; font-size:12px;")
+            imi.setToolTip(tr("imitated_tip"))
+            chips.addWidget(imi)
         style = db.q1("SELECT name FROM style_presets WHERE value=?", (drama["style"],))
         if style and drama["work_type"] != "novel":
-            chips.addWidget(W.tag(style["name"]))
+            st = W.tag(style["name"])
+            st.setStyleSheet("background:#eef1fe; color:#4b6ef5; border-radius:4px;"
+                             "padding:2px 8px; font-size:12px;")
+            chips.addWidget(st)
         chips.addStretch(1)
-        lay.addLayout(chips)
-
+        bl.addLayout(chips)
         nc = db.q1("SELECT COUNT(*) c FROM characters WHERE drama_id=?", (drama["id"],))["c"]
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama["id"],))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama["id"],))["c"]
-        row = QHBoxLayout()
-        row.addWidget(QLabel(f"{nc} 角色 · {ns} 场景 · {ne} 集"))
-        row.addStretch(1)
-        ago = QLabel(_fmt_ago(drama["updated_at"]))
+        meta = QLabel(f"{nc} 角色 · {ns} 场景 · {ne} 集")
+        meta.setObjectName("muted")
+        bl.addWidget(meta)
+        bl.addStretch(1)
+        foot = QHBoxLayout()
+        ago = QLabel(f"🕘 {_fmt_ago(drama['updated_at'])}")
         ago.setObjectName("muted")
-        row.addWidget(ago)
-        lay.addLayout(row)
+        foot.addWidget(ago)
+        foot.addStretch(1)
+        bl.addLayout(foot)
+        lay.addWidget(body, 1)
 
     def _apply_status_style(self, status: str):
         label, color = STATUS_META.get(status, STATUS_META["pending"])
-        self.status_btn.setText(label)
+        self.status_btn.setText(f"●  {label}")
         self.status_btn.setStyleSheet(
-            f"QPushButton{{color:{color};border:1px solid {color}44;border-radius:10px;"
-            f"background:transparent;font-size:11px;padding:2px 6px;}}")
+            f"QPushButton{{color:{color}; background:#ffffff; border:1px solid {color}44;"
+            f"border-radius:12px; font-size:11px; padding:0 10px;}}")
 
     def _status_menu(self):
         m = QMenu(self)
@@ -134,28 +209,12 @@ class ProjectCard(QFrame):
         elif act == a2:
             self.delete_requested.emit(self.drama_id, self._title)
 
-
     def mousePressEvent(self, ev):
-        """整卡可点打开项目(对齐原版);点在状态徽标/更多按钮上时不触发。"""
         if getattr(self, "_btn_clicked", False):
             self._btn_clicked = False
-            super().mousePressEvent(ev)
-            return
-        self.open_requested.emit(self.drama_id)
+        else:
+            self.open_requested.emit(self.drama_id)
         super().mousePressEvent(ev)
-
-
-def _dot_icon(color: str):
-    from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-    pm = QPixmap(12, 12)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor(color))
-    p.setPen(Qt.NoPen)
-    p.drawEllipse(2, 2, 8, 8)
-    p.end()
-    return QIcon(pm)
 
 
 class ProjectsPage(QWidget):
@@ -164,36 +223,64 @@ class ProjectsPage(QWidget):
     def __init__(self):
         super().__init__()
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 24)
-        root.setSpacing(14)
+        root.setContentsMargins(28, 20, 28, 24)
+        root.setSpacing(16)
 
-        root.addWidget(W.h1(tr("projects")))
-        root.addWidget(W.muted(tr("tagline")))
+        # ── 头部:标题 + 副标题 + 三枚统计胶囊 + 新建项目 ──
+        head = QHBoxLayout()
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        title = W.h1(tr("launcher_title"))
+        title.setStyleSheet("font-size:20px; font-weight:650;")
+        left.addWidget(title)
+        sub = QLabel(tr("launcher_sub"))
+        sub.setObjectName("muted")
+        left.addWidget(sub)
+        head.addLayout(left, 1)
+        self.stats = QHBoxLayout()
+        self.stats.setSpacing(8)
+        self._stat_projects = _pill("")
+        self._stat_running = _pill("", "success")
+        self._stat_styles = _pill("", "accent")
+        for w in (self._stat_projects, self._stat_running, self._stat_styles):
+            self.stats.addWidget(w)
+        head.addLayout(self.stats)
+        new_btn = W.primary_btn("＋ " + tr("new_project"))
+        new_btn.clicked.connect(self._new_project)
+        head.addWidget(new_btn)
+        root.addLayout(head)
 
-        self.stat = W.StatBar([("0", tr("stat_projects").format(0)),
-                               ("0", tr("stat_running").format(0)),
-                               ("0", tr("stat_styles").format(0))])
-        root.addWidget(self.stat)
-
+        # ── 工具条:搜索 + 状态胶囊 + 排序 ──
         bar = QHBoxLayout()
+        bar.setSpacing(12)
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr("search"))
         self.search.setClearButtonEnabled(True)
+        self.search.setFixedWidth(240)
         self.search.textChanged.connect(self.reload)
-        self.filter = QComboBox()
-        for key in ("filter_all", "filter_pending", "filter_running", "filter_done"):
-            self.filter.addItem(tr(key), key.split("filter_")[1])
-        self.filter.currentIndexChanged.connect(self.reload)
+        bar.addWidget(self.search)
+        self._filter_btns: dict[str, QPushButton] = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for key, label in FILTERS:
+            b = QPushButton(label)
+            b.setObjectName("filterChip")
+            b.setCheckable(True)
+            b.setChecked(key == "all")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
+            group.addButton(b)
+            self._filter_btns[key] = b
+            bar.addWidget(b)
+        self._filter = "all"
+        bar.addStretch(1)
+        from PySide6.QtWidgets import QComboBox
         self.sort = QComboBox()
-        self.sort.addItem("🕘 " + tr("sort_recent"), "recent")
-        self.sort.addItem("🔤 按标题", "title")
+        self.sort.setFixedWidth(132)
+        self.sort.addItem(tr("sort_recent"), "recent")
+        self.sort.addItem(tr("sort_title"), "title")
         self.sort.currentIndexChanged.connect(self.reload)
-        new_btn = W.primary_btn("＋ " + tr("new_project"))
-        new_btn.clicked.connect(self._new_project)
-        bar.addWidget(self.search, 1)
-        bar.addWidget(self.filter)
         bar.addWidget(self.sort)
-        bar.addWidget(new_btn)
         root.addLayout(bar)
 
         self.scroll = QScrollArea()
@@ -201,8 +288,9 @@ class ProjectsPage(QWidget):
         self.scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
         self.holder = QWidget()
         self.grid = QGridLayout(self.holder)
-        self.grid.setContentsMargins(0, 8, 0, 8)
-        self.grid.setSpacing(14)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(16)
+        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.scroll.setWidget(self.holder)
         root.addWidget(self.scroll, 1)
         self._new_cb = None
@@ -215,27 +303,28 @@ class ProjectsPage(QWidget):
         if self._new_cb:
             self._new_cb()
 
+    def _set_filter(self, key: str):
+        self._filter = key
+        self._filter_btns[key].setChecked(True)
+        self.reload()
+
     def reload(self):
         while self.grid.count():
             item = self.grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
-        flt = self.filter.currentData() or "all"
         kw = self.search.text().strip()
+        want = FILTER_DB.get(self._filter)
         rows = [dict(r) for r in db.q("SELECT * FROM dramas")]
-        shown = []
-        for d in rows:
-            if kw and kw not in d["title"]:
-                continue
-            if flt != "all" and d.get("status", "pending") != flt:
-                continue
-            shown.append(d)
+        shown = [d for d in rows
+                 if (not kw or kw in d["title"])
+                 and (want is None or (d.get("status") or "pending") == want)]
         if self.sort.currentData() == "title":
             shown.sort(key=lambda x: x["title"])
         else:
             shown.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
-        cols = 3
+        cols = max(1, (self.scroll.viewport().width() or 1200) // 276)
         for i, d in enumerate(shown):
             card = ProjectCard(d)
             card.open_requested.connect(self.open_drama.emit)
@@ -243,14 +332,38 @@ class ProjectsPage(QWidget):
             card.status_changed.connect(self._set_status)
             self.grid.addWidget(card, i // cols, i % cols)
         if not shown:
-            empty = QLabel("还没有项目" if not rows else "没有符合条件的项目")
-            empty.setObjectName("muted")
-            empty.setAlignment(Qt.AlignCenter)
-            self.grid.addWidget(empty, 0, 0)
+            self.grid.addWidget(self._empty_state(bool(rows)), 0, 0)
         running = sum(1 for d in rows if d.get("status") == "active")
-        self.stat.setItemValue(0, tr("stat_projects").format(len(rows)))
-        self.stat.setItemValue(1, tr("stat_running").format(running))
-        self.stat.setItemValue(2, tr("stat_styles").format(len(db.q("SELECT id FROM style_presets WHERE is_active=1"))))
+        self._stat_projects.setText(tr("n_projects", len(rows)))
+        self._stat_running.setText(tr("n_running", running))
+        self._stat_styles.setText(tr("n_styles",
+                                      len(db.q("SELECT id FROM style_presets WHERE is_active=1"))))
+
+    def _empty_state(self, has_rows: bool) -> QWidget:
+        from . import episode_cards as C
+        box = QFrame()
+        box.setObjectName("emptyState")
+        box.setMinimumHeight(240)
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(16, 24, 16, 24)
+        lay.setSpacing(10)
+        icon = QLabel("⊞" if not has_rows else "🔍")
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet("font-size:30px; color:#4b6ef5;")
+        lay.addWidget(icon)
+        title = QLabel(tr("empty_first_project") if not has_rows else tr("empty_no_match"))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-weight:600; font-size:14px;")
+        lay.addWidget(title)
+        desc = QLabel(tr("empty_first_desc") if not has_rows else tr("empty_no_match_desc"))
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setObjectName("muted")
+        lay.addWidget(desc)
+        if not has_rows:
+            btn = W.primary_btn(tr("new_project"))
+            btn.clicked.connect(self._new_project)
+            lay.addWidget(btn, 0, Qt.AlignCenter)
+        return box
 
     def _set_status(self, drama_id: int, status: str):
         db.ex("UPDATE dramas SET status=?, updated_at=? WHERE id=?", (status, db.now(), drama_id))

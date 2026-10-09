@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                               QSizePolicy,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QSplitter,
-                               QTabWidget, QVBoxLayout, QWidget)
+                               QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from ..ai import face_swap, image_client, registry, tts_client, video_client
 from ..agents import runner
@@ -44,6 +44,40 @@ SECTION_OF = {k: sid for sid, _, keys in NAV_SECTIONS for k in keys}
 # 底部四段跑马灯:剧本 / 资产 / 视漫 / 漫画(点击直接跳对应步骤)
 PROGRESS_STEPS = [("raw", "stage_script"), ("assets", "stage_assets"),
                   ("storyboard", "stage_video"), ("comic", "stage_comic")]
+
+REF_TAB_KEYS = {"character": "chars", "scene": "scenes", "prop": "props"}
+
+
+def _sb_prompt_request(r: dict) -> str:
+    """「视频提示词」AI 重生成请求(对齐原版 inspector 的 AI 生成按钮)。"""
+    return f"""为下面这个镜头生成视频提示词(英文,一段,不要解释)。
+
+画面描述:
+{r.get('content') or '(无)'}
+
+氛围:
+{r.get('atmosphere') or '(无)'}
+
+运镜与时长:
+镜别 {r.get('shot_type') or '(无)'} / 角度 {r.get('angle') or '(无)'} / 运动 {r.get('movement') or '(无)'} / {int(r.get('duration') or 10)}s
+
+已绑定的 @角色名 / @场景名 会自动映射为参考图,请原样保留这些 @ 标记。
+只输出提示词正文。"""
+
+
+# 资产卡文案(对齐原版 zh.json 的 episode.asset.* / episode.prod.*)
+ASSET_LABELS = {
+    "cover_todo": "形象待生成", "cover_done": "已生成", "cover_tag": "视图",
+    "lead": "主角", "supporting": "配角", "extra": "龙套",
+    "gen_image": "图绘", "gen_image_tip": "基于当前形象图生图重绘,保留人物特征",
+    "gen_text": "文绘", "gen_text_tip": "仅用文字重新生成(全新 AI 相貌,可避开真人审核)",
+    "upload": "上传", "upload_tip": "上传资产图",
+    "face_swap": "换脸", "face_swap_tip": "换脸:用一张参考图替换当前形象",
+    "variants": "◑ 造型变体", "variants_tip": "同一角色的多套服装造型",
+    "prompt_ph": "首次生成图片时由提示词 Agent 自动生成",
+    "redraw": "重绘", "generate": "生成", "prop": "道具", "desc_empty": "暂无描述",
+    "gen_done": "已就绪", "gen_todo": "待生成",
+}
 
 
 class StepNav(QWidget):
@@ -333,6 +367,7 @@ class EpisodePage(QWidget):
         self.panels["comic"].setVisible(work not in ("novel", "promotion", "video_clone"))
         self._reload_models()
         self._reload_raw()
+        self._reload_rewrite()
         self._update_novel_gate()
         self._reload_assets()
         self._reload_storyboard()
@@ -489,8 +524,27 @@ class EpisodePage(QWidget):
         return st
 
     def _open_tasks(self):
-        from .task_panel import TaskPanel
-        TaskPanel(self.episode_id, self).exec()
+        """右侧任务抽屉(对齐原版 .task-drawer):挂在窗口最上层,点遮罩关闭。"""
+        from .task_panel import TaskDrawer
+        win = self.window()
+        if getattr(win, "_task_drawer", None) is not None:
+            try:
+                win._task_drawer.close()
+            except RuntimeError:
+                pass
+        drawer = TaskDrawer(self.episode_id, win)
+        drawer.closed.connect(lambda d: self._close_task_drawer(d))
+        win._task_drawer = drawer
+        win.stack.addWidget(drawer)
+        win.stack.setCurrentWidget(drawer)
+        return drawer
+
+    def _close_task_drawer(self, drawer):
+        host = self.window()
+        if host._task_drawer is drawer:
+            host._task_drawer = None
+        host.stack.removeWidget(drawer)
+        drawer.deleteLater()
 
     def refresh(self):
         """侧栏「刷新数据」:重载当前集与各面板状态。"""
@@ -510,9 +564,9 @@ class EpisodePage(QWidget):
             nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (self.episode_id,))["c"]
             self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
             stats = TASKMGR.ep_video_stats(self.episode_id)
-            self.sb_stat.setText(f"{tr('in_progress')} {stats['processing']} · {tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}")
+            self._update_metric_pills(TASKMGR.ep_video_stats(self.episode_id))
             active = TASKMGR.active_count()
-            self.task_btn.setText(f"{tr('tasks')}" + (f" · {active}" if active else ""))
+            self.task_btn.setText(f"☰ {tr('tasks')}" + (f" · {active}" if active else ""))
             self.nav.set_step_states(self._step_states())
             self._sync_nav_progress(self._step)
         finally:
@@ -538,115 +592,194 @@ class EpisodePage(QWidget):
         return w
 
     def _panel_raw(self, lay):
-        self.raw_edit = QPlainTextEdit()
-        self.raw_edit.setPlaceholderText(tr("paste_hint"))
-        self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        """原始内容页:步骤指示器 + 字数统计在左,操作按钮群在右(对齐 .step-toolbar)。"""
+        from . import episode_cards as C
         from .ai_edit_dialog import install_ai_edit_shortcut
-        install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit)
-        ai_btn = QPushButton("✨ AI 修改 (Ctrl+L)")
-        ai_btn.setToolTip("选中若干行改写选中内容;不选则在光标位置插入")
-        ai_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
-        self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
-        bar = QHBoxLayout()
+        lay.setContentsMargins(8, 6, 8, 8)
+        lay.setSpacing(0)
+
+        bar = QFrame()
+        bar.setObjectName("taskHead")
+        bl = QVBoxLayout(bar)
+        bl.setContentsMargins(12, 8, 12, 8)
+        bl.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self._step_indicator("01", tr("raw_content")))
+        self.raw_count = QLabel("")
+        self.raw_count.setObjectName("muted")
+        row.addWidget(self.raw_count)
         self.words_spin = QSpinBox()
         self.words_spin.setRange(0, 200000)
-        self.words_spin.setSpecialValueText("∞")
-        self.style_edit = QLineEdit()
-        self.style_edit.setPlaceholderText(tr("style_label"))
-        self.style_edit.setToolTip("预设之外的自定义文风,失焦即存到本项目")
-        self.style_edit.editingFinished.connect(self._save_novel_style)
-        save_btn = QPushButton(tr("save"))
-        save_btn.clicked.connect(self._save_raw)
-        self.novel_btn = W.primary_btn(tr("ai_novel"))
-        self.novel_btn.clicked.connect(self._ai_novel)
-        novel_btn = self.novel_btn
-        self.batch_btn = QPushButton(tr("batch_write"))
-        self.batch_btn.clicked.connect(self._batch_novel)
-        batch_btn = self.batch_btn
-        bar.addWidget(QLabel(tr("target_words")))
-        bar.addWidget(self.words_spin)
-        bar.addWidget(QLabel(tr("style_label")))
-        # 文风:6 个预设 + 自定义(对齐原版 episode.vue 的 NOVEL_STYLES,写 dramas.novel_style)
+        self.words_spin.setFixedWidth(96)
+        self.words_spin.setSpecialValueText(tr("no_limit"))
+        self.words_spin.setToolTip(tr("target_words"))
+        self.words_spin.valueChanged.connect(lambda _v: self._update_raw_count())
+        row.addWidget(self.words_spin)
+        row.addStretch(1)
+
+        # 文风:6 预设 + 自定义(对齐原版 NOVEL_STYLES)
         from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
+        row.addWidget(QLabel(tr("style_label")))
         self.style_combo = QComboBox()
-        self.style_combo.setMinimumWidth(120)
+        self.style_combo.setMinimumWidth(116)
         self.style_combo.addItem("", "")
         for name, prompt in NOVEL_STYLES:
             self.style_combo.addItem(name, prompt)
         self.style_combo.addItem(tr("style_custom"), NOVEL_STYLE_CUSTOM)
         self.style_combo.currentIndexChanged.connect(self._on_style_pick)
-        bar.addWidget(self.style_combo)
-        bar.addWidget(self.style_edit, 1)
-        bar.addWidget(ai_btn)
-        bar.addWidget(novel_btn)
-        bar.addWidget(batch_btn)
-        bar.addWidget(save_btn)
-        lay.addLayout(bar)
-        # 小说线第二行:策划 / 审校 / 按指令改稿 / 封面
-        bar2 = QHBoxLayout()
-        plan_btn = QPushButton("§ 策划与设定")
+        row.addWidget(self.style_combo)
+
+        plan_btn = QPushButton("⚙ " + tr("novel_settings"))
+        plan_btn.setToolTip(tr("novel_settings_tip"))
         plan_btn.clicked.connect(self._open_plan)
-        review_btn = QPushButton("◇ AI 六维审校")
-        review_btn.clicked.connect(self._review_chapter)
-        self.edit_instr = QLineEdit()
-        self.edit_instr.setPlaceholderText("按指令改稿:如「把开头改得更抓人」「加强母亲戏份」")
-        edit_btn = QPushButton("✏ 改稿")
-        edit_btn.clicked.connect(self._edit_chapter)
-        bar2.addWidget(plan_btn)
+        row.addWidget(plan_btn)
+        self.chapter_name_btn = QPushButton("✎ " + tr("gen_title"))
+        self.chapter_name_btn.setToolTip(tr("gen_title_tip"))
+        self.chapter_name_btn.clicked.connect(lambda: self._gen_chapter_title())
+        row.addWidget(self.chapter_name_btn)
+        self.novel_btn = W.primary_btn("📕 " + tr("ai_novel"))
+        self.novel_btn.clicked.connect(self._ai_novel)
+        row.addWidget(self.novel_btn)
+        self.batch_btn = QPushButton("📋 " + tr("batch_write"))
+        self.batch_btn.clicked.connect(self._batch_novel)
+        row.addWidget(self.batch_btn)
+        self.review_badge = QPushButton("")
+        self.review_badge.setToolTip(tr("review_open_hint"))
+        self.review_badge.clicked.connect(self._show_review_detail)
+        self.review_badge.setVisible(False)
+        row.addWidget(self.review_badge)
+        save_btn = W.primary_btn("💾 " + tr("save"))
+        save_btn.clicked.connect(self._save_raw)
+        row.addWidget(save_btn)
+        bl.addLayout(row)
+
         self.gate_lab = W.muted("")
-        self.gate_lab.setStyleSheet("color:#ad6800;background:#fff7e6;border-radius:6px;padding:4px 8px;")
+        self.gate_lab.setStyleSheet(
+            "color:#ad6800; background:#fff7e6; border-radius:6px; padding:4px 8px;")
         self.gate_lab.setVisible(False)
-        bar2.addWidget(self.gate_lab)
-        self.review_btn = review_btn
-        review_btn.setToolTip("六维审校(连贯性/人设/设定/物件/文风/节奏)·点击查看问题明细")
-        self.summary_btn = QPushButton("≡ 全书审校清单")
-        self.summary_btn.clicked.connect(self._open_review_summary)
-        read_btn = QPushButton("🔊 朗读本章")
-        read_btn.clicked.connect(self._read_aloud)
-        bar2.addWidget(review_btn)
-        bar2.addWidget(self.summary_btn)
-        bar2.addWidget(read_btn)
-        bar2.addWidget(self.edit_instr, 1)
-        bar2.addWidget(edit_btn)
-        lay.addLayout(bar2)
+        bl.addWidget(self.gate_lab)
+        lay.addWidget(bar)
+
+        # 自定义文风编辑区(选「自定义…」时展开)
+        self.style_edit = C.SaveOnBlurEdit()
+        self.style_edit.setPlaceholderText(tr("style_label"))
+        self.style_edit.setFixedHeight(52)
+        self.style_edit.setToolTip(tr("style_custom_tip"))
+        self.style_edit.editing_finished.connect(self._save_novel_style)
+        self.style_edit.setVisible(False)
+        lay.addWidget(self.style_edit)
+
+        self.raw_edit = C.SaveOnBlurEdit()
+        self.raw_edit.setPlaceholderText(tr("paste_hint"))
+        self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit)
+        self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        ai_btn = QPushButton("✨ " + tr("ai_edit"))
+        ai_btn.setToolTip(tr("ai_edit_tip"))
+        ai_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
+        raw_row = QHBoxLayout()
+        raw_row.setContentsMargins(12, 4, 12, 0)
+        raw_row.addWidget(ai_btn)
+        raw_row.addStretch(1)
+        lay.addLayout(raw_row)
         lay.addWidget(self.raw_edit, 1)
+
+        # 小说线第二行:审校 / 改稿 / 朗读
+        bar2 = QFrame()
+        bar2.setObjectName("taskHead")
+        b2 = QHBoxLayout(bar2)
+        b2.setContentsMargins(12, 6, 12, 6)
+        b2.setSpacing(8)
+        self.review_btn = QPushButton("🔎 " + tr("ai_review"))
+        self.review_btn.setToolTip(tr("ai_review_tip"))
+        self.review_btn.clicked.connect(self._review_chapter)
+        b2.addWidget(self.review_btn)
+        self.summary_btn = QPushButton("✅ " + tr("review_summary"))
+        self.summary_btn.clicked.connect(self._open_review_summary)
+        b2.addWidget(self.summary_btn)
+        read_btn = QPushButton("🔊 " + tr("read_aloud"))
+        read_btn.clicked.connect(self._read_aloud)
+        b2.addWidget(read_btn)
+        self.edit_instr = QLineEdit()
+        self.edit_instr.setPlaceholderText(tr("edit_instr_ph"))
+        edit_btn = QPushButton("✏ " + tr("edit_chapter"))
+        edit_btn.clicked.connect(self._edit_chapter)
+        b2.addWidget(self.edit_instr, 1)
+        b2.addWidget(edit_btn)
+        lay.addWidget(bar2)
+        self._update_raw_count()
+
+    def _step_indicator(self, num: str, name: str) -> QWidget:
+        """步骤指示器:方块序号 + 名称(对齐 .step-indicator)。"""
+        box = QWidget()
+        box.setStyleSheet("background:transparent; border:none;")
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(7)
+        chip = QLabel(num)
+        chip.setFixedSize(26, 26)
+        chip.setAlignment(Qt.AlignCenter)
+        chip.setStyleSheet(
+            "background:#eef1fe; color:#4b6ef5; border-radius:10px;"
+            "font-family:monospace; font-size:10px; font-weight:800;")
+        lay.addWidget(chip)
+        lab = QLabel(name)
+        lab.setStyleSheet("font-size:12.5px; font-weight:700;")
+        lay.addWidget(lab)
+        return box
+
+    def _update_raw_count(self):
+        n = len(self.raw_edit.toPlainText()) if hasattr(self, "raw_edit") else 0
+        target = self.words_spin.value() if hasattr(self, "words_spin") else 0
+        self.raw_count.setText(tr("raw_count", n, target if target else "∞"))
 
     def _reload_raw(self):
         from ..pipeline import novel as novel_pipe
         ep = self._ep
         self.raw_edit.setPlainText(ep["content"] or "")
+        self.words_spin.blockSignals(True)
         self.words_spin.setValue(ep["target_words"] or 0)
-        self.style_edit.blockSignals(True)
+        self.words_spin.blockSignals(False)
         cur = novel_pipe.get_novel_style(self.drama_id)
-        self.style_edit.setText(cur)
-        self.style_combo.blockSignals(True)
         idx = self.style_combo.findData(cur)
         if idx < 0 and cur:
-            self.style_combo.setCurrentIndex(self.style_combo.findData(novel_pipe.NOVEL_STYLE_CUSTOM))
-        else:
-            self.style_combo.setCurrentIndex(max(0, idx))
+            idx = self.style_combo.findData(novel_pipe.NOVEL_STYLE_CUSTOM)
+        self.style_combo.blockSignals(True)
+        self.style_combo.setCurrentIndex(max(0, idx))
         self.style_combo.blockSignals(False)
+        self.style_edit.blockSignals(True)
+        self.style_edit.setPlainText(cur)
         self.style_edit.blockSignals(False)
-        if hasattr(self, "novel_btn"):
-            self._update_novel_gate()
+        self.style_edit.setVisible(self.style_combo.currentData() == novel_pipe.NOVEL_STYLE_CUSTOM)
+        self._update_raw_count()
+        issues = self._review_issues()
+        self.review_badge.setText(tr("review_n", len(issues)))
+        self.review_badge.setVisible(bool(issues))
+        # 「章节名」按钮:标题缺失且已有正文才出现(对齐原版 chapterNameMissing)
+        has = bool((ep["content"] or "").strip())
+        self.chapter_name_btn.setVisible(has and _chapter_name_missing(dict(ep)))
+        self._update_novel_gate()
 
     def _on_style_pick(self):
-        """选预设即写本项目;选「自定义」把全文塞进输入框继续改。"""
+        """选预设即写本项目;选「自定义…」展开编辑框继续改。"""
         from ..pipeline import novel as novel_pipe
         data = self.style_combo.currentData()
+        custom = data == novel_pipe.NOVEL_STYLE_CUSTOM
+        self.style_edit.setVisible(custom)
         if not data:
             return
-        if data == novel_pipe.NOVEL_STYLE_CUSTOM:
+        if custom:
             self.style_edit.setFocus()
             return
-        self.style_edit.setText(data)
+        self.style_edit.setPlainText(data)
         self._save_novel_style()
 
     def _save_novel_style(self):
         from ..pipeline import novel as novel_pipe
         if not self.drama_id:
             return
-        text = self.style_edit.text().strip()
+        text = self.style_edit.toPlainText().strip()
         if text == novel_pipe.get_novel_style(self.drama_id):
             return
         novel_pipe.set_novel_style(self.drama_id, text)
@@ -657,6 +790,30 @@ class EpisodePage(QWidget):
         self.style_combo.blockSignals(False)
         ok(tr("style_saved"))
 
+
+    def _gen_chapter_title(self):
+        """AI 生成章节名:优先从正文首行提取,提取不到才调模型。"""
+        from ..core.taskmgr import TASKMGR
+
+        def job(tid):
+            from ..pipeline import novel as novel_pipe
+            return novel_pipe.gen_chapter_title(self.episode_id)
+
+        def done(tid, result, error):
+            if error:
+                err(error)
+                return
+            name, src = result
+            ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            self.title.setText(f"{self._drama['title']} · {tr('episode_n').format(self._ep['episode_number'])}")
+            self.chapter_name_btn.setVisible(False)
+
+        TASKMGR.submit("novel_title", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+
+    def _generate_one(self, sb_id: int):
+        """单镜生成视频(任务行右侧操作键 / 主行动键)。"""
+        self._one_video(sb_id)
 
     def _open_ai_edit(self, editor):
         """Ctrl+L:选中→改写选中;未选中→光标处插入;可勾选整章处理。"""
@@ -914,39 +1071,123 @@ class EpisodePage(QWidget):
 
     # ── 阶段② AI 改写 ──
     def _panel_rewrite(self, lay):
-        self.script_edit = QPlainTextEdit()
-        self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        """AI 改写页:步骤指示器 + 字数 + 文风 + 改写/保存,正文区三态(空/加载/编辑)。"""
+        from . import episode_cards as C
         from .ai_edit_dialog import install_ai_edit_shortcut
+        lay.setContentsMargins(8, 6, 8, 8)
+        lay.setSpacing(0)
+        bar = QFrame()
+        bar.setObjectName("taskHead")
+        bl = QVBoxLayout(bar)
+        bl.setContentsMargins(12, 8, 12, 8)
+        bl.setSpacing(6)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self._step_indicator("02", tr("ai_rewrite")))
+        self.script_len_lab = W.muted("")
+        row.addWidget(self.script_len_lab)
+        row.addStretch(1)
+        row.addWidget(QLabel(tr("style_label")))
+        self.style_combo2 = QComboBox()
+        self.style_combo2.setMinimumWidth(116)
+        self.style_combo2.addItem("", "")
+        for name, prompt in self.style_combo_items():
+            self.style_combo2.addItem(name, prompt)
+        self.style_combo2.addItem(tr("style_custom"), "__custom__")
+        self.style_combo2.currentIndexChanged.connect(self._on_style_pick2)
+        row.addWidget(self.style_combo2)
+        self.rewrite_btn = W.primary_btn("⚡ " + tr("ai_to_script"))
+        self.rewrite_btn.setToolTip(tr("ai_to_script_tip"))
+        self.rewrite_btn.clicked.connect(self._rewrite)
+        row.addWidget(self.rewrite_btn)
+        rewrite_again = QPushButton("↻ " + tr("rewrite"))
+        rewrite_again.clicked.connect(self._rewrite)
+        row.addWidget(rewrite_again)
+        save_script = W.primary_btn("💾 " + tr("save"))
+        save_script.clicked.connect(self._save_script)
+        row.addWidget(save_script)
+        bl.addLayout(row)
+        lay.addWidget(bar)
+
+        self.rewrite_empty = C.empty_state("→", tr("rewrite_empty_title"), tr("rewrite_empty_desc"))
+        start_btn = W.primary_btn(tr("start_rewrite"))
+        start_btn.clicked.connect(self._rewrite)
+        self.rewrite_empty.layout().addWidget(start_btn, 0, Qt.AlignCenter)
+        lay.addWidget(self.rewrite_empty)
+
+        self.rewrite_loading = QLabel("⠋ " + tr("rewriting"))
+        self.rewrite_loading.setObjectName("muted")
+        self.rewrite_loading.setAlignment(Qt.AlignCenter)
+        self.rewrite_loading.setVisible(False)
+        lay.addWidget(self.rewrite_loading)
+
+        self.script_edit = C.SaveOnBlurEdit()
+        self.script_edit.setPlaceholderText(tr("script_ph"))
+        self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         install_ai_edit_shortcut(self.script_edit, self._open_ai_edit)
-        ai_btn2 = QPushButton("✨ AI 修改 (Ctrl+L)")
-        ai_btn2.setToolTip("选中若干行改写选中内容;不选则在光标位置插入")
-        ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
-        bar = QHBoxLayout()
-        rewrite_btn = W.primary_btn(tr("rewrite"))
-        rewrite_btn.clicked.connect(self._rewrite)
-        bar.addWidget(ai_btn2)
-        save_btn = QPushButton(tr("save"))
-        save_btn.clicked.connect(self._save_script)
-        bar.addWidget(rewrite_btn)
-        bar.addWidget(save_btn)
-        bar.addStretch(1)
-        lay.addLayout(bar)
         lay.addWidget(self.script_edit, 1)
+        ai_row = QHBoxLayout()
+        ai_row.setContentsMargins(12, 4, 12, 0)
+        ai_btn2 = QPushButton("✨ " + tr("ai_edit"))
+        ai_btn2.setToolTip(tr("ai_edit_tip"))
+        ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
+        ai_row.addWidget(ai_btn2)
+        ai_row.addStretch(1)
+        lay.addLayout(ai_row)
+
+    def style_combo_items(self):
+        from ..pipeline.novel import NOVEL_STYLES
+        return NOVEL_STYLES
+
+    def _on_style_pick2(self):
+        from ..pipeline import novel as novel_pipe
+        data = self.style_combo2.currentData()
+        if data and data != "__custom__":
+            novel_pipe.set_novel_style(self.drama_id, data)
+            self.style_combo.blockSignals(True)
+            self.style_combo.setCurrentIndex(max(0, self.style_combo.findData(data)))
+            self.style_combo.blockSignals(False)
 
     def _reload_rewrite(self):
-        self.script_edit.setPlainText(self._ep["script_content"] or "")
+        from ..pipeline import novel as novel_pipe
+        text = self._ep["script_content"] or ""
+        self.script_edit.setPlainText(text)
+        self.script_len_lab.setText(tr("chars_n", len(text)) if text else "")
+        has = bool(text)
+        self.rewrite_empty.setVisible(not has)
+        self.script_edit.setVisible(has)
+        cur = novel_pipe.get_novel_style(self.drama_id)
+        idx = self.style_combo2.findData(cur)
+        if idx < 0 and cur:
+            idx = self.style_combo2.findData("__custom__")
+        self.style_combo2.blockSignals(True)
+        self.style_combo2.setCurrentIndex(max(0, idx))
+        self.style_combo2.blockSignals(False)
+        self.rewrite_again = getattr(self, "rewrite_again", None)
+        self.rewrite_btn.setEnabled(True)
 
     def _rewrite(self):
+        from ..pipeline import novel as novel_pipe
         self._save_raw_silent()
+        style = novel_pipe.get_novel_style(self.drama_id)
+        self.rewrite_loading.setVisible(True)
+        self.rewrite_empty.setVisible(False)
+        btn = getattr(self, "rewrite_btn", None)
+        if btn:
+            btn.setEnabled(False)
         def job(tid):
-            return rewriter.rewrite_script(self.episode_id, self.style_edit.text().strip(),
+            return rewriter.rewrite_script(self.episode_id, style,
                                            config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, error):
+            self.rewrite_loading.setVisible(False)
+            if btn:
+                btn.setEnabled(True)
             if error:
                 err("AI")
-            else:
-                self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
-                self.script_edit.setPlainText(result or "")
+                self._reload_rewrite()
+                return
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            self._reload_rewrite()
         TASKMGR.submit("script", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _save_script(self):
@@ -956,67 +1197,138 @@ class EpisodePage(QWidget):
 
     # ── 阶段③ 视漫制作(资产) ──
     def _panel_assets(self, lay):
+        from . import episode_cards as C
+        lay.setContentsMargins(10, 8, 12, 10)
+        lay.setSpacing(8)
+
+        # ── 工具条 .prod-section-bar:胶囊页签 + 就绪计数 + 右侧动作区 ──
         bar = QHBoxLayout()
-        re_chars = QPushButton(tr("re_extract_chars"))
-        re_chars.clicked.connect(lambda: self._extract("characters"))
-        re_scenes = QPushButton(tr("re_extract_scenes"))
-        re_scenes.clicked.connect(lambda: self._extract("scenes"))
-        re_props = QPushButton(tr("re_extract_props"))
-        re_props.clicked.connect(lambda: self._extract("props"))
-        extract_all = W.primary_btn(tr("extract"))
-        extract_all.clicked.connect(lambda: self._extract("all"))
-        b_chars = WaitingButton(tr("batch_chars"))
-        b_chars.clicked.connect(lambda: self._batch_images("characters"))
-        b_scenes = WaitingButton(tr("batch_scenes"))
-        b_scenes.clicked.connect(lambda: self._batch_images("scenes"))
-        b_props = WaitingButton(tr("batch_props"))
-        b_props.clicked.connect(lambda: self._batch_images("props"))
-        for b in (re_chars, re_scenes, re_props, extract_all, b_chars, b_scenes, b_props):
-            bar.addWidget(b)
+        bar.setSpacing(7)
+        seg = QFrame()
+        seg.setObjectName("segWrap")
+        seg_lay = QHBoxLayout(seg)
+        seg_lay.setContentsMargins(2, 2, 2, 2)
+        seg_lay.setSpacing(2)
+        self._asset_mode = "regular"
+        self._seg_btns = {}
+        seg_group = QButtonGroup(self)
+        seg_group.setExclusive(True)
+        for key, label in (("regular", tr("normal_assets")), ("comic", tr("comic_assets"))):
+            b = QPushButton(label)
+            b.setObjectName("segTab")
+            b.setCheckable(True)
+            b.setChecked(key == "regular")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self._switch_asset_mode(k))
+            seg_group.addButton(b)
+            self._seg_btns[key] = b
+            seg_lay.addWidget(b)
+        bar.addWidget(seg)
+        self.asset_stat = C.mono_tag("")
+        bar.addWidget(self.asset_stat)
         bar.addStretch(1)
+        self._extract_btns = {}
+        for kind, key in (("characters", "re_extract_chars"), ("scenes", "re_extract_scenes"),
+                          ("props", "re_extract_props")):
+            b = QPushButton(tr(key))
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=kind: self._extract(k))
+            self._extract_btns[kind] = b
+            bar.addWidget(b)
+        self.extract_all_btn = W.primary_btn(tr("extract"))
+        self.extract_all_btn.clicked.connect(lambda: self._extract("all"))
+        bar.addWidget(self.extract_all_btn)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.VLine)
+        divider.setFixedHeight(18)
+        bar.addWidget(divider)
+        bar.addWidget(QLabel(tr("image_svc") + ":"))
+        self.asset_model = QComboBox()
+        self.asset_model.setFixedWidth(120)
+        bar.addWidget(self.asset_model)
+        self._batch_btns = {}
+        for kind, key in (("characters", "batch_chars"), ("scenes", "batch_scenes"),
+                          ("props", "batch_props")):
+            b = WaitingButton(tr(key))
+            b.clicked.connect(lambda _=False, k=kind: self._batch_images(k))
+            self._batch_btns[kind] = b
+            bar.addWidget(b)
         lay.addLayout(bar)
-        self.asset_stat = QLabel("")
-        self.asset_stat.setObjectName("muted")
-        self.asset_empty = QLabel("—" + tr("extract") + "—")
-        self.asset_empty.setObjectName("muted")
-        self.asset_empty.setAlignment(Qt.AlignCenter)
-        self.asset_list = QVBoxLayout()
-        # 漫画资产 tab(真实页:角色/场景/道具 漫画风格镜像图)
-        self.asset_tabs = QTabWidget()
-        normal_tab = QWidget()
-        n_lay = QVBoxLayout(normal_tab)
-        n_lay.setContentsMargins(0, 6, 0, 6)
-        n_lay.addWidget(self.asset_stat)
+
+        # 漫画资产工具条(仅 comic 模式可见)
+        self._comic_bar = QWidget()
+        cb_lay = QHBoxLayout(self._comic_bar)
+        cb_lay.setContentsMargins(0, 0, 0, 0)
+        self._comic_batch = W.primary_btn("📕 " + tr("batch_comic_style"))
+        self._comic_batch.setToolTip(tr("batch_comic_style_tip"))
+        self._comic_batch.clicked.connect(self._batch_comic_assets)
+        cb_lay.addWidget(self._comic_batch)
+        cb_lay.addStretch(1)
+        lay.addWidget(self._comic_bar)
+
+        self.asset_stack = QStackedWidget()
+        self.asset_stack.setObjectName("prodContent")
+
+        # ── 常规资产:三段区块 + 网格 ──
+        normal = QWidget()
+        n_lay = QVBoxLayout(normal)
+        n_lay.setContentsMargins(0, 4, 0, 4)
+        n_lay.setSpacing(10)
+        self.asset_sections: dict[str, dict] = {}
+        for kind, title, add_label in (("characters", tr("chars"), tr("add")),
+                                       ("scenes", tr("scenes"), tr("add")),
+                                       ("props", tr("props"), tr("add"))):
+            n_lay.addWidget(C.section_title(title, add_label))
+            grid_host = QWidget()
+            grid = QGridLayout(grid_host)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(10)
+            n_lay.addWidget(grid_host)
+            self.asset_sections[kind] = {"grid": grid, "host": grid_host, "empty": None}
+        self.asset_empty = C.empty_state("🔍", tr("asset_empty_title"), tr("asset_empty_desc"))
         n_lay.addWidget(self.asset_empty)
-        n_lay.addLayout(self.asset_list)
         n_lay.addStretch(1)
-        n_scroll = QScrollArea()
-        n_scroll.setWidgetResizable(True)
-        n_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        n_holder = QWidget()
-        n_holder.setLayout(n_lay)
-        n_scroll.setWidget(n_holder)
-        self.asset_tabs.addTab(n_scroll, tr("normal_assets"))
-        comic_tab = QWidget()
-        c_lay = QVBoxLayout(comic_tab)
-        c_bar = QHBoxLayout()
-        c_bar.addWidget(W.muted("漫画风格镜像资产(与常规资产行独立,用于条漫出图)"))
-        c_bar.addStretch(1)
-        c_batch = W.primary_btn("◑ " + tr("batch_image"))
-        c_batch.clicked.connect(self._batch_comic_assets)
-        c_bar.addWidget(c_batch)
-        c_lay.addLayout(c_bar)
-        self.comic_asset_list = QVBoxLayout()
-        c_lay.addLayout(self.comic_asset_list)
+        self.asset_stack.addWidget(C.scroll_host(normal))
+
+        # ── 漫画资产:三段区块 + 横条 ──
+        comic = QWidget()
+        c_lay = QVBoxLayout(comic)
+        c_lay.setContentsMargins(0, 4, 0, 4)
+        c_lay.setSpacing(12)
+        self.comic_asset_sections: dict[str, dict] = {}
+        for kind, title in (("characters", tr("chars")), ("scenes", tr("scenes")),
+                            ("props", tr("props"))):
+            c_lay.addWidget(C.section_title(title))
+            host = QWidget()
+            hl = QVBoxLayout(host)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(6)
+            grid = QGridLayout()
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(8)
+            hl.addLayout(grid)
+            c_lay.addWidget(host)
+            self.comic_asset_sections[kind] = {"grid": grid, "host": host}
+        self.comic_asset_empty = C.empty_state("📕", tr("comic_asset_empty"))
+        c_lay.addWidget(self.comic_asset_empty)
         c_lay.addStretch(1)
-        c_scroll = QScrollArea()
-        c_scroll.setWidgetResizable(True)
-        c_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        c_holder = QWidget()
-        c_holder.setLayout(c_lay)
-        c_scroll.setWidget(c_holder)
-        self.asset_tabs.addTab(c_scroll, tr("comic_assets"))
-        lay.addWidget(self.asset_tabs, 1)
+        self.asset_stack.addWidget(C.scroll_host(comic))
+        lay.addWidget(self.asset_stack, 1)
+        self._switch_asset_mode("regular")
+
+    def _switch_asset_mode(self, mode: str):
+        """常规资产 / 漫画资产(对齐 .asset-view-tabs)。"""
+        self._asset_mode = mode
+        self.asset_stack.setCurrentIndex(0 if mode == "regular" else 1)
+        for b in self._extract_btns.values():
+            b.setVisible(mode == "regular")
+        self.extract_all_btn.setVisible(mode == "regular")
+        self.asset_model.setVisible(mode == "regular")
+        for b in self._batch_btns.values():
+            b.setVisible(mode == "regular")
+        self._comic_bar.setVisible(mode == "comic")
+        self._reload_assets()
 
     def _gen_comic_asset(self, kind: str, row_id: int):
         from ..pipeline import comic as comic_pipe
@@ -1075,78 +1387,142 @@ class EpisodePage(QWidget):
         TASKMGR.submit("extract", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _reload_assets(self):
-        if not getattr(self, "asset_list", None):
+        if not getattr(self, "asset_sections", None):
             return
-        while self.asset_list.count():
-            item = self.asset_list.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        rows: list[dict] = []
-        for r in db.q("SELECT * FROM characters WHERE drama_id=? ORDER BY id", (self.drama_id,)):
-            rows.append({**dict(r), "kind": "1"})
-        for r in db.q("SELECT * FROM scenes WHERE drama_id=? ORDER BY id", (self.drama_id,)):
-            rows.append({**dict(r), "kind": "2"})
-        for r in db.q("SELECT * FROM props WHERE drama_id=? ORDER BY id", (self.drama_id,)):
-            rows.append({**dict(r), "kind": "3"})
+        from . import episode_cards as C
+        cols = {kind: 3 for kind in self.asset_sections}
+        groups = {
+            "characters": [dict(r) for r in db.q(
+                "SELECT * FROM characters WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+            "scenes": [dict(r) for r in db.q(
+                "SELECT * FROM scenes WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+            "props": [dict(r) for r in db.q(
+                "SELECT * FROM props WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+        }
         total = ready = 0
-        for r in rows:
-            total += 1
-            if r["image_url"]:
-                ready += 1
-            self.asset_list.addWidget(self._asset_row(r))
+        comic_total = comic_ready = 0
+        for kind, rows in groups.items():
+            sec = self.asset_sections[kind]
+            grid = sec["grid"]
+            while grid.count():
+                it = grid.takeAt(0)
+                w = it.widget()
+                if w:
+                    w.deleteLater()
+            n = 0
+            for r in rows:
+                total += 1
+                if r.get("image_url"):
+                    ready += 1
+                if r.get("comic_image_url"):
+                    comic_ready += 1
+                comic_total += 1
+                card = (C.CharacterAssetCard(r, ASSET_LABELS, on_gen_image=self._cb_gen_image(r, kind),
+                                              on_gen_text=self._cb_gen_image(r, kind),
+                                              on_upload=self._cb_upload(r, kind),
+                                              on_face_swap=(lambda rid=r["id"]: self._face_swap(rid))
+                                              if kind == "characters" else None,
+                                              on_variants=(lambda cid=r["id"]: self._open_variants(cid))
+                                              if kind == "characters" else None,
+                                              on_prompt=self._cb_prompt(r, kind),
+                                              on_open=self._cb_open(r, kind))
+                       if kind == "characters"
+                       else C.AssetCard(r, ASSET_LABELS, kind[:-1],
+                                        on_gen=self._cb_gen_image(r, kind),
+                                        on_upload=self._cb_upload(r, kind),
+                                        on_prompt=self._cb_prompt(r, kind),
+                                        on_open=self._cb_open(r, kind)))
+                grid.addWidget(card, n // cols[kind], n % cols[kind])
+                n += 1
+            sec["host"].setVisible(n > 0)
+            if kind == "props" and n == 0:
+                holder = QFrame()
+                holder.setObjectName("propsEmpty")
+                hl = QLabel(tr("props_empty"))
+                hl.setObjectName("muted")
+                hl.setAlignment(Qt.AlignCenter)
+                hlay = QHBoxLayout(holder)
+                hlay.setContentsMargins(8, 14, 8, 14)
+                hlay.addWidget(hl)
+                grid.addWidget(holder, 0, 0)
+                sec["host"].setVisible(True)
+            # 漫画资产行
+            csec = self.comic_asset_sections[kind]
+            cgrid = csec["grid"]
+            while cgrid.count():
+                it = cgrid.takeAt(0)
+                w = it.widget()
+                if w:
+                    w.deleteLater()
+            cn = 0
+            for r in rows:
+                cid, name = r["id"], (r.get("name") or r.get("location") or "")
+                if kind == "scenes" and r.get("time"):
+                    name = f"{name} · {r['time']}"
+                roww = C.ComicAssetRow(r.get("comic_image_url"), name,
+                                       bool(r.get("comic_image_url")), False,
+                                       tr("comic_gen_tip"),
+                                       lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c))
+                cgrid.addWidget(roww, cn // 2, cn % 2)
+                cn += 1
+            csec["host"].setVisible(cn > 0)
         self.asset_empty.setVisible(total == 0)
-        self.asset_stat.setText(tr("ready_n").format(ready, total))
+        self.comic_asset_empty.setVisible(total == 0)
+        self.asset_stat.setText(
+            tr("ready_n").format(ready, total) if self._asset_mode == "regular"
+            else tr("comic_asset_ready_n").format(comic_ready, comic_total))
+        self._refresh_asset_model_combo()
 
-    def _asset_row(self, row: dict) -> QWidget:
-        box = W.make_card()
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(10, 8, 10, 8)
-        info = QVBoxLayout()
-        head = QHBoxLayout()
-        name = W.h2(row["name"])
-        head.addWidget(name)
-        kind_label = {"1": tr("chars"), "2": tr("scenes"), "3": tr("props")}.get(str(row["kind"]), "")
-        head.addWidget(W.tag(kind_label))
-        if row.get("role_type"):
-            head.addWidget(W.tag({"lead": tr("lead"), "supporting": tr("supporting"), "extra": tr("extra")}.get(row["role_type"], "")))
-        if row["image_url"]:
-            head.addWidget(W.tag(tr("generated")))
-        head.addStretch(1)
-        info.addLayout(head)
-        desc = (row.get("appearance") or row.get("prompt") or row.get("description") or "")
-        lab = QLabel((desc or "")[:100] + ("…" if len(desc or "") > 100 else ""))
-        lab.setObjectName("muted")
-        lab.setWordWrap(True)
-        info.addWidget(lab)
-        if row["final_prompt"]:
-            fp = QLabel(tr("final_prompt") + ": " + row["final_prompt"][:80] + "…")
-            fp.setObjectName("muted")
-            info.addWidget(fp)
-        lay.addLayout(info, 1)
-        img = QLabel()
-        img.setPixmap(W.pixmap_from_media(row["image_url"], 96))
-        lay.addWidget(img)
-        btns = QVBoxLayout()
-        kid = {"1": ("characters", "character"), "2": ("scenes", "scene"), "3": ("props", "prop")}[str(row["kind"])]
-        gen_prompt = QPushButton("AI " + tr("final_prompt"))
-        gen_prompt.clicked.connect(lambda _=False, r=row, k=kid[1]: self._gen_prompt(r["id"], k))
-        redraw = QPushButton(tr("redraw"))
-        redraw.clicked.connect(lambda _=False, r=row, t=kid[0]: self._gen_image(r["id"], t))
-        upload = QPushButton(tr("upload"))
-        upload.clicked.connect(lambda _=False, r=row, t=kid[0]: self._upload_image(r["id"], t))
-        if str(row["kind"]) == "1":
-            swap = QPushButton(tr("face_swap"))
-            swap.clicked.connect(lambda _=False, r=row: self._face_swap(r["id"]))
-            btns.addWidget(swap)
-            var = QPushButton("◑ 变体")
-            var.setToolTip("造型变体(多套服装造型)")
-            var.clicked.connect(lambda _=False, r=row: self._open_variants(r["id"]))
-            btns.addWidget(var)
-        for b in (gen_prompt, redraw, upload):
-            btns.addWidget(b)
-        lay.addLayout(btns)
-        return box
+    def _cb_gen_image(self, r: dict, kind: str):
+        table = {"characters": "characters", "scenes": "scenes", "props": "props"}[kind]
+        return lambda: self._gen_image(r["id"], table)
+
+    def _cb_upload(self, r: dict, kind: str):
+        table = {"characters": "characters", "scenes": "scenes", "props": "props"}[kind]
+        return lambda: self._upload_image(r["id"], table)
+
+    def _cb_prompt(self, r: dict, kind: str):
+        singular = {"characters": "character", "scenes": "scene", "props": "prop"}[kind]
+        return lambda: self._gen_prompt(r["id"], singular)
+
+    def _cb_open(self, r: dict, kind: str):
+        table = {"characters": "character", "scenes": "scene", "props": "prop"}[kind]
+        def _open():
+            from .asset_dialogs import AssetDetailDialog
+            AssetDetailDialog(self, table, dict(r), on_changed=self._reload_assets).exec()
+        return _open
+
+    def _refresh_asset_model_combo(self):
+        """资产页的图片模型下拉与顶栏保持一致(跟随顶部选中项)。"""
+        if not hasattr(self, "asset_model"):
+            return
+        cur = self.image_model.currentData()
+        self.asset_model.blockSignals(True)
+        self.asset_model.clear()
+        self.asset_model.addItem(tr("follow_top"), None)
+        for r in registry.list_configs("image"):
+            self.asset_model.addItem(f"{r['remark'] or r['provider']}/{r['model']}", r["id"])
+        i = self.asset_model.findData(cur)
+        self.asset_model.setCurrentIndex(i if i >= 0 else 0)
+        self.asset_model.blockSignals(False)
+        if not getattr(self, "_asset_model_wired", False):
+            self.asset_model.currentIndexChanged.connect(self._asset_model_picked)
+            self._asset_model_wired = True
+
+    def _active_image_config(self):
+        """资产页下拉优先,没选就跟随顶栏图片模型。"""
+        if hasattr(self, "asset_model") and self.asset_model.currentData() is not None:
+            return self.asset_model.currentData()
+        return self.image_model.currentData()
+
+    def _asset_model_picked(self, _idx: int):
+        """资产页选了图片模型 → 同步顶栏,两处始终一致。"""
+        data = self.asset_model.currentData()
+        if data is None:
+            return
+        i = self.image_model.findData(data)
+        if i >= 0 and i != self.image_model.currentIndex():
+            self.image_model.setCurrentIndex(i)
 
     def _open_variants(self, character_id: int):
         from .variants_dialog import VariantsDialog
@@ -1176,7 +1552,7 @@ class EpisodePage(QWidget):
                 kind = {"characters": "character", "scenes": "scene", "props": "prop"}[table]
                 fp = {"character": prompts_gen.character_prompt, "scene": prompts_gen.scene_prompt,
                       "prop": prompts_gen.prop_prompt}[kind](row_id, config_id=self.text_model.currentData())
-            out, _provider = image_client.generate_image(fp, config_id=self.image_model.currentData())
+            out, _provider = image_client.generate_image(fp, config_id=self._active_image_config())
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), row_id))
             return url
@@ -1218,102 +1594,705 @@ class EpisodePage(QWidget):
 
     # ── 阶段④ 分镜 ──
     def _panel_storyboard(self, lay):
+        """分镜 / 视漫工作台:左任务列表 + 中检查器(含参考素材) + 右播放器与参数。"""
+        from . import episode_cards as C
+        lay.setContentsMargins(10, 8, 12, 10)
+        lay.setSpacing(8)
+
+        # ── 工具条 ──
         bar = QHBoxLayout()
+        bar.setSpacing(7)
+        bar.addWidget(QLabel(tr("storyboard")))
+        self.sb_seg_stat = C.mono_tag("")
+        bar.addWidget(self.sb_seg_stat)
+        bar.addStretch(1)
         split_btn = W.primary_btn(tr("re_split"))
+        split_btn.setToolTip(tr("re_split_tip"))
         split_btn.clicked.connect(self._split_sb)
+        bar.addWidget(split_btn)
         prompts_btn = QPushButton(tr("batch_prompts"))
         prompts_btn.clicked.connect(self._batch_vp)
-        video_btn = WaitingButton(tr("batch_video"), primary=True)
-        video_btn.clicked.connect(self._batch_video)
-        bar.addWidget(split_btn)
-        self.repair_btn = W.primary_btn("⟳ 自动补全 0")
-        self.repair_btn.setToolTip("修复拆分中断留下的残缺分镜:补出图提示词 + 绑定角色/场景/道具参考素材")
+        bar.addWidget(prompts_btn)
+        self.repair_btn = W.primary_btn("⟳ " + tr("auto_repair", 0))
+        self.repair_btn.setToolTip(tr("auto_repair_tip"))
         self.repair_btn.setVisible(False)
         self.repair_btn.clicked.connect(self._repair_storyboards)
         bar.addWidget(self.repair_btn)
-        bar.addWidget(prompts_btn)
+        video_btn = WaitingButton(tr("batch_video"), primary=True)
+        video_btn.clicked.connect(self._batch_video)
         bar.addWidget(video_btn)
-        bar.addStretch(1)
-        self.sb_stat = QLabel("")
-        self.sb_stat.setObjectName("muted")
-        bar.addWidget(self.sb_stat)
         lay.addLayout(bar)
-        self.sb_meta = QLabel("")
-        self.sb_meta.setObjectName("muted")
-        lay.addWidget(self.sb_meta)
-        self.sb_list = QVBoxLayout()
-        lay.addLayout(self.sb_list)
+
+        # ── 空态 ──
+        self.sb_empty = C.empty_state("🎞", tr("sb_empty_title"), tr("sb_empty_desc"))
+        lay.addWidget(self.sb_empty)
+        self.sb_locked = W.muted("")
+        lay.addWidget(self.sb_locked)
+
+        # ── 三栏工作台 ──
+        self.sb_workbench = QWidget()
+        wb = QHBoxLayout(self.sb_workbench)
+        wb.setContentsMargins(0, 0, 0, 0)
+        wb.setSpacing(0)
+
+        # 左:视频任务列表
+        left = QFrame()
+        left.setObjectName("taskList")
+        left.setFixedWidth(252)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+        head = QFrame()
+        head.setObjectName("taskHead")
+        hl = QVBoxLayout(head)
+        hl.setContentsMargins(12, 10, 12, 10)
+        hl.setSpacing(5)
+        self.sb_list_title = QLabel(tr("video_task_list"))
+        self.sb_list_title.setObjectName("taskTitle")
+        hl.addWidget(self.sb_list_title)
+        self.sb_list_meta = QLabel("")
+        self.sb_list_meta.setObjectName("muted")
+        hl.addWidget(self.sb_list_meta)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(5)
+        self._metric_pills: dict[str, QPushButton] = {}
+        for state, key in (("pending", "in_progress"), ("done", "done"), ("failed", "failed")):
+            p = C.MetricPill(state, f"0 {tr(key)}", self._filter_tasks)
+            self._metric_pills[state] = p
+            metrics.addWidget(p)
+        metrics.addStretch(1)
+        hl.addLayout(metrics)
+        ll.addWidget(head)
+        self.sb_task_scroll = C.scroll_host(QWidget())
+        self.sb_task_host = self.sb_task_scroll.widget()
+        tl = QVBoxLayout(self.sb_task_host)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        self.sb_task_lay = tl
+        tl.addStretch(1)
+        ll.addWidget(self.sb_task_scroll, 1)
+        wb.addWidget(left)
+
+        # 中:检查器(画面描述 / 氛围 / 视频提示词 / 旁白 + 参考素材)
+        center = QWidget()
+        cl = QVBoxLayout(center)
+        cl.setContentsMargins(14, 14, 10, 14)
+        cl.setSpacing(12)
+        desc_lab = QLabel(tr("sb_desc_label"))
+        desc_lab.setObjectName("inspectorLabel")
+        cl.addWidget(desc_lab)
+        self.sb_content = C.SaveOnBlurEdit()
+        self.sb_content.setPlaceholderText(tr("sb_desc_ph"))
+        self.sb_content.setFixedHeight(112)
+        self.sb_content.editing_finished.connect(
+            lambda: self._save_sb_field("content", self.sb_content))
+        cl.addWidget(self.sb_content)
+        atm_lab = QLabel(tr("sb_atmosphere"))
+        atm_lab.setObjectName("inspectorLabel")
+        cl.addWidget(atm_lab)
+        self.sb_atmosphere = C.SaveOnBlurEdit()
+        self.sb_atmosphere.setPlaceholderText(tr("sb_atmosphere_ph"))
+        self.sb_atmosphere.setFixedHeight(56)
+        self.sb_atmosphere.editing_finished.connect(
+            lambda: self._save_sb_field("atmosphere", self.sb_atmosphere))
+        cl.addWidget(self.sb_atmosphere)
+        vp_head = QHBoxLayout()
+        vp_lab = QLabel(tr("sb_video_prompt"))
+        vp_lab.setObjectName("heroLabel")
+        vp_head.addWidget(vp_lab)
+        vp_head.addStretch(1)
+        self.sb_ai_prompt_btn = WaitingButton(tr("ai_generate"))
+        self.sb_ai_prompt_btn.clicked.connect(self._ai_sb_prompt)
+        vp_head.addWidget(self.sb_ai_prompt_btn)
+        cl.addLayout(vp_head)
+        self.sb_video_prompt = C.SaveOnBlurEdit()
+        self.sb_video_prompt.setPlaceholderText(tr("sb_video_prompt_ph"))
+        self.sb_video_prompt.setMinimumHeight(140)
+        self.sb_video_prompt.editing_finished.connect(
+            lambda: self._save_sb_field("video_prompt", self.sb_video_prompt))
+        cl.addWidget(self.sb_video_prompt, 1)
+        nr_head = QHBoxLayout()
+        nr_lab = QLabel(tr("sb_narration"))
+        nr_lab.setObjectName("inspectorLabel")
+        nr_head.addWidget(nr_lab)
+        nr_head.addStretch(1)
+        self.sb_tts_btn = WaitingButton("🔊 " + tr("synth_narration"))
+        self.sb_tts_btn.clicked.connect(self._one_tts_selected)
+        nr_head.addWidget(self.sb_tts_btn)
+        cl.addLayout(nr_head)
+        self.sb_narration = C.SaveOnBlurEdit()
+        self.sb_narration.setPlaceholderText(tr("sb_narration_ph"))
+        self.sb_narration.setFixedHeight(60)
+        self.sb_narration.textChanged.connect(self._update_narration_count)
+        self.sb_narration.editing_finished.connect(
+            lambda: self._save_sb_field("narration", self.sb_narration))
+        cl.addWidget(self.sb_narration)
+        nr_foot = QHBoxLayout()
+        self.sb_narr_count = QLabel("0/200")
+        self.sb_narr_count.setObjectName("muted")
+        nr_foot.addWidget(self.sb_narr_count)
+        nr_foot.addWidget(QLabel(tr("narration_duration")))
+        self.sb_narr_dur = QSpinBox()
+        self.sb_narr_dur.setRange(1, 60)
+        self.sb_narr_dur.setSuffix(" s")
+        self.sb_narr_dur.setFixedWidth(76)
+        self.sb_narr_dur.valueChanged.connect(self._save_narration_duration)
+        nr_foot.addWidget(self.sb_narr_dur)
+        self.sb_narr_audio = QLabel("")
+        self.sb_narr_audio.setObjectName("chip")
+        nr_foot.addWidget(self.sb_narr_audio)
+        nr_foot.addStretch(1)
+        cl.addLayout(nr_foot)
+
+        # 参考素材:角色 / 场景 / 道具 三个页签
+        ref_head = QHBoxLayout()
+        rl = QLabel(tr("ref_title"))
+        rl.setObjectName("inspectorLabel")
+        ref_head.addWidget(rl)
+        ref_head.addStretch(1)
+        self.sb_ref_count = C.mono_tag("")
+        ref_head.addWidget(self.sb_ref_count)
+        cl.addLayout(ref_head)
+        self._ref_tab_btns: dict[str, QPushButton] = {}
+        tab_row = QHBoxLayout()
+        tab_row.setSpacing(4)
+        for kind, key in (("character", "chars"), ("scene", "scenes"), ("prop", "props")):
+            b = QPushButton(tr(key))
+            b.setObjectName("refTab")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=kind: self._switch_ref_tab(k))
+            self._ref_tab_btns[kind] = b
+            tab_row.addWidget(b)
+        tab_row.addStretch(1)
+        cl.addLayout(tab_row)
+        self.sb_ref_scroll = C.scroll_host(QWidget())
+        self.sb_ref_host = self.sb_ref_scroll.widget()
+        rl2 = QGridLayout(self.sb_ref_host)
+        rl2.setContentsMargins(0, 2, 0, 0)
+        rl2.setSpacing(8)
+        self.sb_ref_lay = rl2
+        cl.addWidget(self.sb_ref_scroll, 1)
+        wb.addWidget(center, 1)
+
+        # 右:播放器 + 历史 + 绑定参考图 + 参数卡 + 主行动键
+        right = QFrame()
+        right.setObjectName("inspector")
+        right.setFixedWidth(322)
+        rl3 = QVBoxLayout(right)
+        rl3.setContentsMargins(12, 12, 12, 12)
+        rl3.setSpacing(10)
+        pl_head = QHBoxLayout()
+        self.sb_player_title = QLabel("")
+        self.sb_player_title.setObjectName("taskTitle")
+        pl_head.addWidget(self.sb_player_title)
+        pl_head.addStretch(1)
+        self.sb_dl_btn = QPushButton("↓")
+        self.sb_dl_btn.setToolTip(tr("download"))
+        self.sb_dl_btn.clicked.connect(self._download_selected)
+        pl_head.addWidget(self.sb_dl_btn)
+        rl3.addLayout(pl_head)
+        stage = QFrame()
+        stage.setObjectName("playerStage")
+        stage.setFixedHeight(198)
+        sl = QVBoxLayout(stage)
+        sl.setContentsMargins(10, 10, 10, 10)
+        self.sb_player = QLabel()
+        self.sb_player.setAlignment(Qt.AlignCenter)
+        self.sb_player_empty = QLabel("")
+        self.sb_player_empty.setAlignment(Qt.AlignCenter)
+        self.sb_player_empty.setWordWrap(True)
+        sl.addWidget(self.sb_player, 1)
+        sl.addWidget(self.sb_player_empty)
+        rl3.addWidget(stage)
+        self.sb_history = QWidget()
+        hl3 = QVBoxLayout(self.sb_history)
+        hl3.setContentsMargins(0, 0, 0, 0)
+        hl3.setSpacing(4)
+        self.sb_history_title = W.muted("")
+        hl3.addWidget(self.sb_history_title)
+        self.sb_history_row = QHBoxLayout()
+        self.sb_history_row.setSpacing(6)
+        self.sb_history_row_host = QWidget()
+        self.sb_history_row_host.setLayout(self.sb_history_row)
+        hl3.addWidget(self.sb_history_row_host)
+        self.sb_history.setVisible(False)
+        rl3.addWidget(self.sb_history)
+        bh = QHBoxLayout()
+        bl = QLabel(tr("bound_refs"))
+        bl.setObjectName("inspectorLabel")
+        bh.addWidget(bl)
+        bh.addStretch(1)
+        self.sb_bound_count = C.mono_tag("")
+        bh.addWidget(self.sb_bound_count)
+        rl3.addLayout(bh)
+        self.sb_bound_host = QWidget()
+        self.sb_bound_lay = QGridLayout(self.sb_bound_host)
+        self.sb_bound_lay.setContentsMargins(0, 0, 0, 0)
+        self.sb_bound_lay.setSpacing(6)
+        rl3.addWidget(self.sb_bound_host)
+        # 参数卡
+        self.sb_params = QFrame()
+        self.sb_params.setObjectName("paramCard")
+        pl4 = QVBoxLayout(self.sb_params)
+        pl4.setContentsMargins(10, 9, 10, 9)
+        pl4.setSpacing(6)
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel(tr("sb_duration")))
+        self.sb_duration = QSpinBox()
+        self.sb_duration.setRange(2, 30)
+        self.sb_duration.setValue(10)
+        self.sb_duration.setSuffix(" s")
+        self.sb_duration.setFixedWidth(74)
+        self.sb_duration.valueChanged.connect(self._save_duration)
+        r1.addWidget(self.sb_duration)
+        r1.addWidget(W.muted("2-30"))
+        r1.addStretch(1)
+        pl4.addLayout(r1)
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel(tr("gen_audio")))
+        self.sb_gen_audio = QCheckBox("")
+        self.sb_gen_audio.setToolTip(tr("gen_audio_tip"))
+        self.sb_gen_audio.toggled.connect(self._save_gen_audio)
+        r2.addWidget(self.sb_gen_audio)
+        r2.addStretch(1)
+        pl4.addLayout(r2)
+        r3 = QHBoxLayout()
+        r3.addWidget(QLabel(tr("setting_tags")))
+        r3.addStretch(1)
+        pl4.addLayout(r3)
+        self.sb_tags_row = QHBoxLayout()
+        self.sb_tags_row.setSpacing(4)
+        self.sb_tags_host = QWidget()
+        self.sb_tags_host.setLayout(self.sb_tags_row)
+        pl4.addWidget(self.sb_tags_host)
+        self.sb_tag_input = QLineEdit()
+        self.sb_tag_input.setPlaceholderText(tr("tags_ph"))
+        self.sb_tag_input.returnPressed.connect(self._add_setting_tag)
+        pl4.addWidget(self.sb_tag_input)
+        pl4.addWidget(W.muted(tr("params_hint")))
+        rl3.addWidget(self.sb_params)
+        self.sb_effective = QLabel("")
+        self.sb_effective.setObjectName("effective")
+        self.sb_effective.setAlignment(Qt.AlignCenter)
+        rl3.addWidget(self.sb_effective)
+        self.sb_action_btn = WaitingButton(tr("generate"), primary=True)
+        self.sb_action_btn.clicked.connect(self._generate_selected)
+        rl3.addWidget(self.sb_action_btn)
+        rl3.addStretch(1)
+        wb.addWidget(right)
+
+        lay.addWidget(self.sb_workbench, 1)
+        self._sb_id = 0
+        self._task_filter = ""
+        self._ref_kind = "character"
 
     def _reload_storyboard(self):
-        if not getattr(self, "sb_list", None):
+        """刷新左栏任务列表 + 统计;选中态不清空,避免正在编辑的内容被重置。"""
+        if not getattr(self, "sb_task_lay", None):
             return
-        while self.sb_list.count():
-            item = self.sb_list.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        rows = db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,))
+        rows = self._sb_rows()
         total = sum(r["duration"] or 0 for r in rows)
-        self.sb_meta.setText(tr("segments", len(rows)) + f" · {tr('total_dur', int(total))}")
-        for r in rows:
-            self.sb_list.addWidget(self._sb_row(dict(r)))
+        self.sb_seg_stat.setText(tr("segments", len(rows)) + f" · {tr('total_dur', int(total))}")
+        self.sb_empty.setVisible(not rows)
+        self.sb_workbench.setVisible(bool(rows))
+        self.sb_locked.setText(tr("locked_video_model", self._video_model_name()) if rows else "")
+        self._render_task_list(rows)
         self._load_incomplete()
         self._refresh_status()
+        if rows and not self._sb_id:
+            self._select_storyboard(rows[0]["id"])
 
-    def _sb_row(self, r: dict) -> QWidget:
-        box = W.make_card()
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(12, 8, 12, 8)
-        head = QHBoxLayout()
-        num = QLabel(f"#{r['storyboard_number']:02d}")
-        num.setObjectName("h2")
-        head.addWidget(num)
-        status = (tr("done") if (r["video_url"] or r["composed_video_url"]) else
-                  (tr("in_progress") if r.get("status") == "processing" else tr("pending")))
-        head.addWidget(W.tag(status))
-        head.addWidget(W.tag(f"{int(r['duration'] or 0)}s"))
-        if r["first_frame_image"]:
-            head.addWidget(W.tag("首帧✓"))
-        head.addStretch(1)
-        ff_btn = QPushButton("▣ 首帧")
-        ff_btn.setToolTip("生成本镜头首帧图")
-        ff_btn.clicked.connect(lambda _=False, i=r["id"]: self._gen_first_frame(i))
-        i2v_btn = QPushButton("▷ 图生")
-        i2v_btn.setToolTip("用首帧图生成视频(图生视频,注入 @角色 参考图)")
-        i2v_btn.clicked.connect(lambda _=False, i=r["id"]: self._compose_i2v(i))
-        sub_btn = QPushButton("T 字幕")
-        sub_btn.setToolTip("把旁白/台词烧录为字幕版本")
-        sub_btn.clicked.connect(lambda _=False, i=r["id"]: self._burn_sub(i))
-        tts_btn = QPushButton("♪")
-        tts_btn.setToolTip(tr("narration"))
-        tts_btn.clicked.connect(lambda _=False, i=r["id"]: self._one_tts(i))
-        redo = QPushButton(tr("redraw"))
-        redo.clicked.connect(lambda _=False, i=r["id"]: self._one_video(i))
-        play = QPushButton("▶")
-        play.setToolTip("播放")
-        play.setEnabled(bool(r["video_url"] or r["composed_video_url"]))
-        play.clicked.connect(lambda _=False, u=r["video_url"] or r["composed_video_url"]: self._play_video(u))
-        dl_btn = QPushButton("↓")
-        dl_btn.setToolTip("下载该镜头视频")
-        dl_btn.setEnabled(bool(r["video_url"] or r["composed_video_url"]))
-        dl_btn.clicked.connect(lambda _=False, rr=r: self._download_sb(rr))
-        for b in (ff_btn, i2v_btn, sub_btn, tts_btn, redo, play, dl_btn):
-            head.addWidget(b)
-        lay.addLayout(head)
-        content = QLabel(r["content"] or "")
-        content.setWordWrap(True)
-        lay.addWidget(content)
-        vp = QLineEdit(r["video_prompt"] or "")
-        vp.setPlaceholderText("视频提示词(可逐镜微调,@角色 自动注入参考图)")
-        vp.editingFinished.connect(lambda li=r["id"], t=vp: db.ex(
-            "UPDATE storyboards SET video_prompt=? WHERE id=?", (t.text(), li)))
-        lay.addWidget(vp)
-        narr = QLineEdit(r["narration"] or "")
-        narr.setPlaceholderText(tr("narration_hint"))
-        narr.editingFinished.connect(lambda li=r["id"], t=narr: db.ex(
-            "UPDATE storyboards SET narration=? WHERE id=?", (t.text(), li)))
-        lay.addWidget(narr)
-        return box
+    def _sb_rows(self) -> list:
+        return [dict(r) for r in db.q(
+            "SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL "
+            "ORDER BY storyboard_number", (self.episode_id,))]
+
+    def _video_model_name(self) -> str:
+        cid = self.video_model.currentData()
+        if cid:
+            for r in registry.list_configs("video"):
+                if r["id"] == cid:
+                    return f"{r['remark'] or r['provider']}/{r['model']}"
+        return tr("configured")
+
+    @staticmethod
+    def _sb_state(r) -> tuple[str, str]:
+        """(state, 文案) —— 与原版 videoTaskState / videoTaskStatusLabel 同口径。
+        兼容 sqlite3.Row 与 dict 两种入参。"""
+        get = (lambda k: r[k]) if not isinstance(r, dict) else r.get
+        if get("video_url") or get("composed_video_url"):
+            return "done", tr("done")
+        if get("status") == "processing":
+            return "pending", tr("in_progress")
+        if get("status") == "failed":
+            return "failed", tr("failed")
+        return "ready", tr("pending")
+
+    def _render_task_list(self, rows: list):
+        from . import episode_cards as C
+        lay = self.sb_task_lay
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        counts = {"pending": 0, "done": 0, "failed": 0}
+        shown = 0
+        for r in rows:
+            state, state_label = self._sb_state(r)
+            counts[state] = counts.get(state, 0) + 1
+            if self._task_filter and state != self._task_filter:
+                continue
+            shown += 1
+            dur = int(r.get("duration") or 0)
+            scene = self._sb_scene_name(r)
+            meta = " · ".join([state_label, f"{dur}s"] + ([scene] if scene else []))
+            action_tip = {"done": tr("redraw"), "pending": tr("in_progress"),
+                          "failed": tr("retry"), "ready": tr("generate")}[state]
+            row = C.VideoTaskRow(
+                int(r["storyboard_number"]), (r["content"] or "")[:40] or tr("shot_n", r["storyboard_number"]),
+                meta, state, state_label, action_tip,
+                r.get("composed_video_url") or r.get("video_url"),
+                selected=(r["id"] == self._sb_id),
+                on_click=lambda _=False, i=r["id"]: self._select_storyboard(i),
+                on_action=lambda _=False, i=r["id"]: self._generate_one(i))
+            lay.insertWidget(lay.count() - 1, row)
+        for state, pill in self._metric_pills.items():
+            pill.setText(f"{counts.get(state, 0)} {pill.text().split(' ', 1)[1]}")
+            pill.setChecked(self._task_filter == state)
+        self.sb_list_meta.setText(
+            tr("task_meta_filter", shown, len(rows)) if self._task_filter
+            else tr("task_meta", len(rows)))
+
+    def _update_metric_pills(self, stats: dict | None = None):
+        """后台任务状态变化时刷新左侧三枚筛选胶囊(不重建列表,保住滚动位置)。"""
+        if not hasattr(self, "_metric_pills"):
+            return
+        if stats is None:
+            counts = {"pending": 0, "done": 0, "failed": 0}
+            for r in self._sb_rows():
+                counts[self._sb_state(r)[0]] = counts.get(self._sb_state(r)[0], 0) + 1
+        else:
+            counts = {"pending": stats.get("processing", 0),
+                      "done": stats.get("completed", 0),
+                      "failed": stats.get("failed", 0)}
+        for state, pill in self._metric_pills.items():
+            pill.setText(f"{counts.get(state, 0)} {pill.text().split(' ', 1)[1]}")
+
+    def _filter_tasks(self, state: str):
+        """点击筛选胶囊:再点同一枚取消筛选。"""
+        self._task_filter = "" if self._task_filter == state else state
+        self._render_task_list(self._sb_rows())
+
+    def _sb_scene_name(self, r: dict) -> str:
+        row = db.q1("SELECT s.location, s.time FROM storyboards sb "
+                    "LEFT JOIN scenes s ON s.id=sb.scene_id WHERE sb.id=?", (r["id"],))
+        if not row or not row["location"]:
+            return ""
+        return f"{row['location']} · {row['time']}" if row["time"] else row["location"]
+
+    # ── 选中分镜:把数据灌进中/右两栏 ──
+    def _select_storyboard(self, sb_id: int):
+        row = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+        if not row:
+            return
+        r = dict(row)
+        self._sb_id = sb_id
+        for w, col in ((self.sb_content, "content"), (self.sb_atmosphere, "atmosphere"),
+                       (self.sb_video_prompt, "video_prompt"), (self.sb_narration, "narration")):
+            w.blockSignals(True)
+            w.setPlainText(r[col] or "")
+            w.blockSignals(False)
+        self.sb_narr_dur.blockSignals(True)
+        self.sb_narr_dur.setValue(max(1, int(r["narration_duration"] or r["duration"] or 10)))
+        self.sb_narr_dur.blockSignals(False)
+        self.sb_duration.blockSignals(True)
+        self.sb_duration.setValue(max(2, min(30, int(r["duration"] or 10))))
+        self.sb_duration.blockSignals(False)
+        audio = (r["video_prompt"] or "") + (r["content"] or "")
+        self.sb_gen_audio.setChecked("--no-audio" not in audio and "--no_audio" not in audio)
+        self._update_narration_count()
+        state, state_label = self._sb_state(r)
+        vid = r["video_url"] or r["composed_video_url"]
+        self.sb_player_title.setText(
+            f"{tr('shot_n', r['storyboard_number'])} · {state_label} · {int(r['duration'] or 0)}s")
+        if vid:
+            self._show_player(vid)
+            self.sb_player_empty.setVisible(False)
+        else:
+            self._clear_player()
+            self.sb_player_empty.setText(
+                tr("video_generating") if state == "pending"
+                else tr("no_video_yet"))
+        self.sb_dl_btn.setEnabled(bool(vid))
+        self.sb_tts_btn.setEnabled(bool((r["narration"] or "").strip()))
+        audio_url = r["narration_audio_url"]
+        self.sb_narr_audio.setText(
+            f"{tr('tts_done')} · {r['narration_voice']}" if audio_url else "")
+        self._render_setting_tags(r)
+        self._render_refs(r)
+        self._render_bound_refs(r)
+        self.sb_effective.setText(
+            f"{self._video_model_name()} · {self._ep['resolution'] or '720p'} · {int(r['duration'] or 10)}s")
+        self.sb_action_btn.setText(tr("redraw") if state == "done" else
+                                   (tr("in_progress") if state == "pending" else tr("generate")))
+        self.sb_action_btn.setEnabled(state != "pending")
+        self.sb_ai_prompt_btn.setEnabled(True)
+        self._render_task_list(self._sb_rows())
+
+    def _show_player(self, url: str):
+        from PySide6.QtMultimedia import QMediaPlayer, QVideoWidget
+        if not hasattr(self, "_player_widget"):
+            self._player_widget = QVideoWidget()
+            self._player_widget.setStyleSheet("border:none; border-radius:6px;")
+            self._player = QMediaPlayer()
+            self._player.setVideoOutput(self._player_widget)
+            self._player_widget.setMinimumHeight(150)
+            self.sb_player.layout().insertWidget(0, self._player_widget)
+        self._player_widget.setVisible(True)
+        self._player_widget.setStyleSheet("border:none; border-radius:6px;")
+        src = config.media_url_to_path(url) if str(url).startswith(("/static/", "static/")) else url
+        self._player.setSource(QUrl.fromLocalFile(str(src)))
+
+    def _clear_player(self):
+        if hasattr(self, "_player"):
+            self._player.stop()
+            self._player_widget.setVisible(False)
+
+    def _update_narration_count(self):
+        n = len(self.sb_narration.toPlainText())
+        self.sb_narr_count.setText(f"{n}/200")
+
+    def _save_sb_field(self, col: str, editor):
+        if not self._sb_id:
+            return
+        db.ex(f"UPDATE storyboards SET {col}=?, updated_at=? WHERE id=?",
+              (editor.toPlainText(), db.now(), self._sb_id))
+
+    def _save_narration_duration(self, value: int):
+        if not self._sb_id:
+            return
+        db.ex("UPDATE storyboards SET narration_duration=?, updated_at=? WHERE id=?",
+              (float(value), db.now(), self._sb_id))
+
+    def _save_duration(self, value: int):
+        if not self._sb_id:
+            return
+        db.ex("UPDATE storyboards SET duration=?, updated_at=? WHERE id=?",
+              (float(value), db.now(), self._sb_id))
+        self._render_task_list(self._sb_rows())
+
+    def _save_gen_audio(self, on: bool):
+        if not self._sb_id:
+            return
+        row = db.q1("SELECT video_prompt, content FROM storyboards WHERE id=?", (self._sb_id,))
+        text = (row["video_prompt"] or "") + "\n" + (row["content"] or "")
+        text = text.replace("--no-audio", "").replace("--no_audio", "")
+        if not on:
+            text += "\n--no-audio"
+        db.ex("UPDATE storyboards SET video_prompt=?, content=?, updated_at=? WHERE id=?",
+              ((row["video_prompt"] or "").replace("--no-audio", "").replace("--no_audio", ""),
+               (row["content"] or "").replace("--no-audio", "").replace("--no_audio", ""),
+               db.now(), self._sb_id))
+        self.sb_video_prompt.setPlainText(text.strip())
+
+    def _add_setting_tag(self):
+        tag = self.sb_tag_input.text().strip()
+        if not tag or not self._sb_id:
+            return
+        row = db.q1("SELECT setting_tags FROM storyboards WHERE id=?", (self._sb_id,))
+        tags = json.loads(row["setting_tags"] or "[]") if row["setting_tags"] else []
+        if isinstance(tags, str):
+            tags = []
+        if tag not in tags:
+            tags.append(tag)
+        db.ex("UPDATE storyboards SET setting_tags=?, updated_at=? WHERE id=?",
+              (json.dumps(tags, ensure_ascii=False), db.now(), self._sb_id))
+        self.sb_tag_input.clear()
+        self._render_setting_tags(dict(row, setting_tags=json.dumps(tags, ensure_ascii=False)))
+
+    def _remove_setting_tag(self, tag: str):
+        if not self._sb_id:
+            return
+        row = db.q1("SELECT setting_tags FROM storyboards WHERE id=?", (self._sb_id,))
+        tags = json.loads(row["setting_tags"] or "[]") if row["setting_tags"] else []
+        tags = [t for t in tags if t != tag]
+        db.ex("UPDATE storyboards SET setting_tags=?, updated_at=? WHERE id=?",
+              (json.dumps(tags, ensure_ascii=False), db.now(), self._sb_id))
+        self._render_setting_tags(dict(row, setting_tags=json.dumps(tags, ensure_ascii=False)))
+
+    def _render_setting_tags(self, r: dict):
+        while self.sb_tags_row.count():
+            it = self.sb_tags_row.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        raw = (r.get("setting_tags") if isinstance(r, dict) else r["setting_tags"]) or "[]"
+        try:
+            tags = json.loads(raw) if isinstance(raw, str) else list(raw)
+        except (TypeError, ValueError):
+            tags = []
+        if not isinstance(tags, list):
+            tags = []
+        for tag in tags:
+            chip = QLabel(f"{tag}  ×")
+            chip.setObjectName("chip")
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.mousePressEvent = lambda _e, t=tag: self._remove_setting_tag(t)
+            self.sb_tags_row.addWidget(chip)
+        self.sb_tags_row.addStretch(1)
+
+    def _switch_ref_tab(self, kind: str):
+        self._ref_kind = kind
+        for k, b in self._ref_tab_btns.items():
+            b.setChecked(k == kind)
+        row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,)) if self._sb_id else None
+        r = dict(row) if row else {}
+        self._render_refs(r)
+        self._render_bound_refs(r)
+
+    REF_PLACEHOLDER = {"character": "角", "scene": "景", "prop": "具"}
+
+    def _ref_rows(self, kind: str) -> list:
+        """本集可参考的资产(与分镜绑定的优先)。"""
+        tables = {"character": ("episode_characters", "characters", "name"),
+                  "scene": ("episode_scenes", "scenes", "location"),
+                  "prop": ("episode_props", "props", "name")}
+        link, table, namecol = tables[kind]
+        return [dict(r) for r in db.q(
+            f"SELECT t.* FROM {link} l JOIN {table} t ON t.id = l."
+            + {"episode_characters": "character_id", "episode_scenes": "scene_id",
+               "episode_props": "prop_id"}[link]
+            + " WHERE l.episode_id=? ORDER BY t.id", (self.episode_id,))]
+
+    def _bound_ids(self, kind: str) -> set:
+        if not self._sb_id:
+            return set()
+        if kind == "character":
+            return {r["character_id"] for r in db.q(
+                "SELECT character_id FROM storyboard_characters WHERE storyboard_id=?",
+                (self._sb_id,))}
+        if kind == "prop":
+            return {r["prop_id"] for r in db.q(
+                "SELECT prop_id FROM storyboard_props WHERE storyboard_id=?", (self._sb_id,))}
+        row = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (self._sb_id,))
+        return {row["scene_id"]} if row and row["scene_id"] else set()
+
+    def _render_refs(self, r: dict):
+        from . import episode_cards as C
+        lay = self.sb_ref_lay
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        kind = self._ref_kind
+        rows = self._ref_rows(kind)
+        bound = self._bound_ids(kind)
+        for i, row in enumerate(rows):
+            name = row.get("name") or row.get("location") or ""
+            has_img = bool(row.get("image_url"))
+            is_bound = row["id"] in bound
+            state = tr("ref_ok") if (is_bound and has_img) else (
+                tr("ref_no_image") if not has_img else tr("ref_unbound"))
+            card = C.RefCard(row.get("image_url"), self.REF_PLACEHOLDER[kind], name,
+                             tr(REF_TAB_KEYS[kind]), state,
+                             on_generate=(lambda _id=row["id"]: self._goto_assets(_id))
+                             if (is_bound and not has_img) else None)
+            card.setProperty("bound", "1" if is_bound else "0")
+            card.style().unpolish(card)
+            card.style().polish(card)
+            lay.addWidget(card, i // 3, i % 3)
+        lay.setRowStretch((len(rows) + 2) // 3, 1)
+        self.sb_ref_count.setText(tr("bound_n", len(bound), len(rows)))
+        for k, b in self._ref_tab_btns.items():
+            b.setText(f"{tr(REF_TAB_KEYS[k])} {len(self._ref_rows(k))}")
+
+    def _goto_assets(self, row_id: int):
+        self._goto_step("assets")
+
+    def _render_bound_refs(self, r: dict):
+        from . import episode_cards as C
+        lay = self.sb_bound_lay
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        cells = []
+        for kind in ("character", "scene", "prop"):
+            for row in self._ref_rows(kind):
+                if row["id"] in self._bound_ids(kind):
+                    cells.append((row, kind))
+        self.sb_bound_count.setText(tr("bound_count_n", len(cells)))
+        if not cells:
+            empty = QLabel(tr("bound_refs_empty"))
+            empty.setObjectName("muted")
+            empty.setAlignment(Qt.AlignCenter)
+            lay.addWidget(empty, 0, 0)
+            return
+        for i, (row, kind) in enumerate(cells):
+            host = QWidget()
+            host.setStyleSheet("border:none;")
+            hl = QVBoxLayout(host)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(2)
+            thumb = QLabel()
+            thumb.setFixedSize(78, 60)
+            thumb.setAlignment(Qt.AlignCenter)
+            thumb.setPixmap(W.pixmap_from_media(row.get("image_url"), 78, 60))
+            hl.addWidget(thumb)
+            nm = QLabel((row.get("name") or row.get("location") or "")[:8])
+            nm.setObjectName("muted")
+            nm.setAlignment(Qt.AlignCenter)
+            nm.setToolTip(row.get("name") or row.get("location") or "")
+            hl.addWidget(nm)
+            lay.addWidget(host, i // 3, i % 3)
+
+    # ── 分镜动作 ──
+    def _generate_selected(self):
+        if self._sb_id:
+            self._generate_one(self._sb_id)
+
+    def _download_selected(self):
+        row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+        if row:
+            self._download_sb(dict(row))
+
+    def _one_tts_selected(self):
+        if self._sb_id:
+            self._one_tts(self._sb_id)
+
+    def _ai_sb_prompt(self):
+        """按当前画面描述 + 氛围重生成视频提示词。"""
+        if not self._sb_id:
+            return
+        row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+        if not row:
+            return
+        r = dict(row)
+        btn = self.sb_ai_prompt_btn
+        btn.busy(tr("ai_generate"))
+
+        def job(tid):
+            return runner.run_agent("prompt_generator", _sb_prompt_request(r), lang=self._drama_lang)
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err("AI")
+                return
+            text = (result or "").strip()
+            if not text:
+                err(tr("ai_empty"))
+                return
+            db.ex("UPDATE storyboards SET video_prompt=?, updated_at=? WHERE id=?",
+                  (text, db.now(), self._sb_id))
+            self.sb_video_prompt.setPlainText(text)
+            ok(tr("video_prompt_saved"))
+
+        TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
 
     def _download_sb(self, sb: dict):
         from ..core import download as dl_mod
@@ -1520,63 +2499,150 @@ class EpisodePage(QWidget):
 
     # ── 阶段⑤ 漫画 ──
     def _panel_comic(self, lay):
+        """漫画页:工具条 + 整话长条图预览 + 3:4 格网格(对齐 .prod-section-bar / .comic-panel-grid)。"""
+        from . import episode_cards as C
+        lay.setContentsMargins(10, 8, 12, 10)
+        lay.setSpacing(8)
         bar = QHBoxLayout()
-        re_panel = W.primary_btn(tr("re_split"))
-        re_panel.clicked.connect(self._split_panels)
-        batch_img = W.primary_btn(tr("batch_image"))
-        batch_img.clicked.connect(self._batch_comic)
-        stitch_btn = QPushButton(tr("stitch_long"))
-        stitch_btn.clicked.connect(self._stitch)
-        bar.addWidget(re_panel)
-        bar.addWidget(batch_img)
-        bar.addWidget(stitch_btn)
+        bar.setSpacing(7)
+        bar.addWidget(QLabel(tr("comic")))
+        self.comic_panel_tag = C.mono_tag("")
+        bar.addWidget(self.comic_panel_tag)
+        self.comic_done_tag = C.mono_tag("")
+        bar.addWidget(self.comic_done_tag)
         bar.addStretch(1)
-        self.comic_stat = QLabel("")
-        self.comic_stat.setObjectName("muted")
-        bar.addWidget(self.comic_stat)
+        bar.addWidget(QLabel(tr("comic_style") + ":"))
+        self.comic_style = QComboBox()
+        self.comic_style.setFixedWidth(150)
+        self.comic_style.addItem(tr("follow_project"), "")
+        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
+            self.comic_style.addItem(r["name"], r["value"])
+        self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
+        self.comic_style.currentIndexChanged.connect(self._on_comic_style)
+        bar.addWidget(self.comic_style)
+        re_panel = W.primary_btn(tr("gen_panels"))
+        re_panel.setToolTip(tr("gen_panels_tip"))
+        re_panel.clicked.connect(self._split_panels)
+        bar.addWidget(re_panel)
+        self.comic_batch_btn = WaitingButton("▦ " + tr("batch_image"))
+        self.comic_batch_btn.clicked.connect(self._batch_comic)
+        bar.addWidget(self.comic_batch_btn)
+        stitch_btn = W.primary_btn("⤓ " + tr("stitch_long"))
+        stitch_btn.clicked.connect(self._stitch)
+        bar.addWidget(stitch_btn)
         lay.addLayout(bar)
-        self.comic_list = QVBoxLayout()
-        lay.addLayout(self.comic_list)
+
+        self.comic_style_edit = C.SaveOnBlurEdit()
+        self.comic_style_edit.setPlaceholderText(tr("comic_style"))
+        self.comic_style_edit.setFixedHeight(52)
+        self.comic_style_edit.editing_finished.connect(self._save_comic_style)
+        self.comic_style_edit.setVisible(False)
+        lay.addWidget(self.comic_style_edit)
+
+        # 整话长条图(拼接后出现)
+        self.comic_stitch_box = QFrame()
+        self.comic_stitch_box.setObjectName("stitchBox")
+        sl = QVBoxLayout(self.comic_stitch_box)
+        sl.setContentsMargins(12, 12, 12, 12)
+        sh = QHBoxLayout()
+        st = W.h2(tr("stitch_long_img"))
+        sh.addWidget(st)
+        sh.addStretch(1)
+        self.comic_stitch_dl = QPushButton("↓ " + tr("download"))
+        self.comic_stitch_dl.clicked.connect(self._download_stitch)
+        sh.addWidget(self.comic_stitch_dl)
+        sl.addLayout(sh)
+        self.comic_stitch_img = QLabel()
+        self.comic_stitch_img.setAlignment(Qt.AlignCenter)
+        self.comic_stitch_img.setFixedHeight(320)
+        sl.addWidget(self.comic_stitch_img)
+        self.comic_stitch_box.setVisible(False)
+        lay.addWidget(self.comic_stitch_box)
+
+        self.comic_empty = C.empty_state("▦", tr("comic_empty_title"), tr("comic_empty_desc"))
+        lay.addWidget(self.comic_empty)
+        self.comic_host = QWidget()
+        self.comic_grid = QGridLayout(self.comic_host)
+        self.comic_grid.setContentsMargins(0, 0, 0, 0)
+        self.comic_grid.setHorizontalSpacing(12)
+        self.comic_grid.setVerticalSpacing(12)
+        lay.addWidget(self.comic_host, 1)
+
+    def _on_comic_style(self, _idx):
+        data = self.comic_style.currentData()
+        self.comic_style_edit.setVisible(data == "__custom__")
+        if data and data != "__custom__":
+            self.comic_style_edit.setPlainText(data)
+            self._save_comic_style()
+
+    def _save_comic_style(self):
+        if not hasattr(self, "comic_style_edit") or not self.comic_style_edit.isVisible():
+            return
+        text = self.comic_style_edit.toPlainText().strip()
+        if not text:
+            return
+        db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
+              (text, db.now(), self.drama_id))
 
     def _reload_comic(self):
-        if not getattr(self, "comic_list", None):
+        if not getattr(self, "comic_grid", None):
             return
-        while self.comic_list.count():
-            item = self.comic_list.takeAt(0)
-            w = item.widget()
+        from . import episode_cards as C
+        grid = self.comic_grid
+        while grid.count():
+            it = grid.takeAt(0)
+            w = it.widget()
             if w:
                 w.deleteLater()
-        rows = db.q("SELECT * FROM comic_panels WHERE episode_id=? ORDER BY panel_number", (self.episode_id,))
+        rows = [dict(r) for r in db.q(
+            "SELECT * FROM comic_panels WHERE episode_id=? ORDER BY panel_number",
+            (self.episode_id,))]
         done_n = sum(1 for r in rows if r["image_url"])
-        self.comic_stat.setText(tr("panels_n", len(rows)) + " · " + tr("images_done", done_n, len(rows)))
-        for r in rows:
-            box = W.make_card()
-            lay = QHBoxLayout(box)
-            lay.setContentsMargins(10, 8, 10, 8)
-            img = QLabel()
-            img.setPixmap(W.pixmap_from_media(r["image_url"], 110))
-            img.setFixedWidth(120)
-            lay.addWidget(img)
-            info = QVBoxLayout()
-            head = QHBoxLayout()
-            head.addWidget(W.h2(f"#{r['panel_number']:02d}"))
-            if r["image_url"]:
-                head.addWidget(W.tag(tr("generated")))
-            head.addStretch(1)
-            redo = QPushButton(tr("redraw"))
-            redo.clicked.connect(lambda _=False, i=r["id"]: self._one_panel_image(i))
-            head.addWidget(redo)
-            info.addLayout(head)
-            d = QLabel(r["description"] or "")
-            d.setWordWrap(True)
-            info.addWidget(d)
-            narr = QLineEdit(r["narration"] or "")
-            narr.setPlaceholderText(tr("narration_hint"))
-            narr.editingFinished.connect(lambda li=r["id"], t=narr: db.ex(
-                "UPDATE comic_panels SET narration=? WHERE id=?", (t.text(), li)))
-            info.addWidget(narr)
-            lay.addLayout(info, 1)
-            self.comic_list.addWidget(box)
+        self.comic_panel_tag.setText(tr("panels_n", len(rows)))
+        self.comic_done_tag.setText(tr("images_done", done_n, len(rows)) if rows else "")
+        self.comic_empty.setVisible(not rows)
+        self.comic_host.setVisible(bool(rows))
+        self.comic_batch_btn.setEnabled(bool(rows))
+        labels = {
+            "draw": tr("draw"), "prompt_label": tr("out_prompt"),
+            "narration_label": tr("narration_note"), "narration_ph": tr("comic_narration_ph"),
+            "narration_hint": tr("comic_narration_hint"),
+        }
+        busy_ids = getattr(self, "_comic_busy", set())
+        for i, r in enumerate(rows):
+            card = C.ComicPanelCard(
+                r, labels, busy=(r["id"] in busy_ids),
+                on_draw=lambda _=False, i=r["id"]: self._one_panel_image(i),
+                on_open=lambda _=False, u=r["image_url"]: self._open_image(u),
+                on_narration_save=lambda t, i=r["id"]: self._save_panel_narration(i, t))
+            grid.addWidget(card, i // 3, i % 3)
+        grid.setRowStretch((len(rows) + 2) // 3, 1)
+        self._reload_comic_stitch()
+
+    def _save_panel_narration(self, panel_id: int, text: str):
+        db.ex("UPDATE comic_panels SET narration=?, updated_at=? WHERE id=?",
+              (text, db.now(), panel_id))
+
+    def _reload_comic_stitch(self):
+        row = db.q1("SELECT merged_url FROM video_merges WHERE episode_id=? AND model='comic_stitch' "
+                    "ORDER BY id DESC LIMIT 1", (self.episode_id,))
+        path = row["merged_url"] if row else ""
+        if not path:
+            self.comic_stitch_box.setVisible(False)
+            return
+        self.comic_stitch_box.setVisible(True)
+        self.comic_stitch_img.setPixmap(W.pixmap_from_media(path, 700, 300))
+
+    def _download_stitch(self):
+        import os
+        row = db.q1("SELECT merged_url FROM video_merges WHERE episode_id=? AND model='comic_stitch' "
+                    "ORDER BY id DESC LIMIT 1", (self.episode_id,))
+        if row and row["merged_url"]:
+            os.startfile(str(config.media_url_to_path(row["merged_url"])))  # noqa
+
+    def _open_image(self, url: str):
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, url).exec()
 
     def _split_panels(self):
         def job(tid):
@@ -1588,6 +2654,10 @@ class EpisodePage(QWidget):
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
 
     def _one_panel_image(self, panel_id: int):
+        if not hasattr(self, "_comic_busy"):
+            self._comic_busy = set()
+        self._comic_busy.add(panel_id)
+        self._reload_comic()
         def job(tid):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id, config_id=self.text_model.currentData())
             out, _p = image_client.generate_image(fp, config_id=self.image_model.currentData())
@@ -1595,6 +2665,7 @@ class EpisodePage(QWidget):
                   (config.path_to_media_url(out), db.now(), panel_id))
             return str(out)
         def done(tid, result, error):
+            self._comic_busy.discard(panel_id)
             if error:
                 err("AI")
             self._reload_comic()
@@ -1606,102 +2677,360 @@ class EpisodePage(QWidget):
             self._one_panel_image(r["id"])
 
     def _stitch(self):
+        if not db.q1("SELECT id FROM video_merges WHERE episode_id=? AND model='comic_stitch'",
+                     (self.episode_id,)):
+            db.ex("""INSERT INTO video_merges(episode_id,provider,model,status,created_at,updated_at)
+                   VALUES(?,'pillow','comic_stitch','processing',?,?)""",
+                  (self.episode_id, db.now(), db.now()))
         def job(tid):
             return stitch_pipe.stitch_panels(self.episode_id)
         def done(tid, result, error):
             if error:
                 err(tr("stitch_long"))
-            else:
-                import os
-                os.startfile(result)  # noqa
+                return
+            db.ex("UPDATE video_merges SET merged_url=?, updated_at=? WHERE episode_id=? AND model='comic_stitch'",
+                  (config.path_to_media_url(result), db.now(), self.episode_id))
+            self._reload_comic_stitch()
+            ok(tr("stitch_done"))
         TASKMGR.submit("stitch", job, done, episode_id=self.episode_id)
 
     # ── 阶段⑥ 拼接导出 ──
     def _panel_export(self, lay):
-        top = QHBoxLayout()
-        mark = W.primary_btn(tr("mark_done"))
-        mark.clicked.connect(self._mark_done)
-        refresh = QPushButton(tr("refresh"))
-        refresh.clicked.connect(self._reload_export)
-        top.addWidget(mark)
-        top.addWidget(refresh)
-        top.addStretch(1)
-        lay.addLayout(top)
-        self.merge_list = QVBoxLayout()
-        lay.addWidget(W.h2(tr("merge_list")))
-        self.merge_empty = QLabel("—")
-        self.merge_empty.setObjectName("muted")
-        lay.addWidget(self.merge_empty)
-        lay.addLayout(self.merge_list)
-        lay.addWidget(W.h2(tr("shot_materials")))
-        bar = QHBoxLayout()
-        clear = QPushButton(tr("clear_selection"))
-        clear.clicked.connect(self._clear_sel)
-        self.merge_btn = W.primary_btn(tr("merge_selected", 0))
-        self.merge_btn.clicked.connect(self._merge)
-        bar.addWidget(clear)
-        bar.addWidget(self.merge_btn)
-        bar.addStretch(1)
-        lay.addLayout(bar)
-        self.shot_checks: dict[int, QCheckBox] = {}
-        self.shot_list = QVBoxLayout()
-        lay.addLayout(self.shot_list)
+        """成片:成片列表(横向卡带)+ 镜头素材(网格选择)+ 片头设置行。"""
+        from . import episode_cards as C
+        lay.setContentsMargins(16, 14, 20, 20)
+        lay.setSpacing(18)
 
+        self.export_empty = C.empty_state("⤓", tr("export_guard_title"), tr("export_guard_desc"))
+        goto = W.primary_btn(tr("goto_script"))
+        goto.clicked.connect(lambda: self._goto_step("raw"))
+        self.export_empty.layout().addWidget(goto, 0, Qt.AlignCenter)
+        lay.addWidget(self.export_empty)
+
+        self.export_body = QWidget()
+        body = QVBoxLayout(self.export_body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+
+        # ── 成片列表 ──
+        head1 = QHBoxLayout()
+        t1 = QLabel(tr("merge_list_title"))
+        t1.setObjectName("taskTitle")
+        head1.addWidget(t1)
+        self.export_count = W.muted("")
+        head1.addWidget(self.export_count)
+        head1.addStretch(1)
+        self.export_done_btn = QPushButton("✓ " + tr("mark_done"))
+        self.export_done_btn.clicked.connect(self._mark_done)
+        head1.addWidget(self.export_done_btn)
+        refresh = QPushButton("⟳ " + tr("refresh"))
+        refresh.clicked.connect(self._reload_export)
+        head1.addWidget(refresh)
+        body.addLayout(head1)
+        self.merge_scroll = QScrollArea()
+        self.merge_scroll.setWidgetResizable(True)
+        self.merge_scroll.setFixedHeight(196)
+        self.merge_scroll.setStyleSheet(
+            "QScrollArea{border:none;background:transparent;}"
+            "QScrollArea QScrollBar:horizontal{height:10px;}")
+        self.merge_strip_host = QWidget()
+        self.merge_strip = QHBoxLayout(self.merge_strip_host)
+        self.merge_strip.setContentsMargins(0, 0, 0, 4)
+        self.merge_strip.setSpacing(12)
+        self.merge_strip_host.setLayout(self.merge_strip)
+        self.merge_scroll.setWidget(self.merge_strip_host)
+        self.merge_scroll.horizontalScrollBar().setVisible(True)
+        body.addWidget(self.merge_scroll)
+        self.merge_empty = QLabel(tr("merge_empty_hint"))
+        self.merge_empty.setObjectName("muted")
+        body.addWidget(self.merge_empty)
+
+        # ── 镜头素材 ──
+        head2 = QHBoxLayout()
+        t2 = QLabel(tr("shot_materials"))
+        t2.setObjectName("taskTitle")
+        head2.addWidget(t2)
+        self.shot_stat = W.muted("")
+        head2.addWidget(self.shot_stat)
+        head2.addStretch(1)
+        self.sel_btn = QPushButton(tr("select_all"))
+        self.sel_btn.clicked.connect(self._toggle_select_all)
+        head2.addWidget(self.sel_btn)
+        self.merge_btn = W.primary_btn("▦ " + tr("merge_selected", 0))
+        self.merge_btn.clicked.connect(self._merge)
+        head2.addWidget(self.merge_btn)
+        body.addLayout(head2)
+
+        # 片头设置行(导出页唯一的合并设置)
+        intro_row = QHBoxLayout()
+        intro_row.setSpacing(8)
+        self.intro_check = QCheckBox(tr("add_intro"))
+        self.intro_check.toggled.connect(self._on_intro_toggle)
+        intro_row.addWidget(self.intro_check)
+        self.intro_title = QLineEdit()
+        self.intro_title.setMaximumWidth(260)
+        self.intro_title.setMaxLength(60)
+        self.intro_title.setPlaceholderText(tr("intro_title_ph"))
+        intro_row.addWidget(self.intro_title)
+        intro_btn = QPushButton("⚙ " + tr("edit_intro"))
+        intro_btn.clicked.connect(self._open_intro)
+        intro_row.addWidget(intro_btn)
+        intro_row.addStretch(1)
+        self.intro_row = intro_row
+        body.addLayout(intro_row)
+
+        self.shot_scroll = C.scroll_host(QWidget())
+        self.shot_host = self.shot_scroll.widget()
+        self.shot_grid = QGridLayout(self.shot_host)
+        self.shot_grid.setContentsMargins(0, 0, 0, 0)
+        self.shot_grid.setSpacing(12)
+        body.addWidget(self.shot_scroll, 1)
+        lay.addWidget(self.export_body, 1)
+
+        self.shot_checks: dict[int, QCheckBox] = {}
+        self.shot_cards: dict[int, QWidget] = {}
+        self._selected: set[int] = set()
+
+    # ── 成片列表 ──
     def _reload_export(self):
-        if not getattr(self, "merge_list", None):
+        """成片页刷新:成片卡带 + 镜头素材网格 + 片头状态。"""
+        if not getattr(self, "export_body", None):
             return
-        while self.merge_list.count():
-            item = self.merge_list.takeAt(0)
-            w = item.widget()
+        from . import episode_cards as C
+        rows = [dict(r) for r in db.q(
+            "SELECT * FROM video_merges WHERE episode_id=? AND model='comic_stitch' "
+            "ORDER BY id DESC LIMIT 1", (self.episode_id,))]
+        rows += [dict(r) for r in db.q(
+            "SELECT * FROM video_merges WHERE episode_id=? AND (model IS NULL OR model!='comic_stitch') "
+            "ORDER BY id DESC LIMIT 30", (self.episode_id,))]
+        ready = db.q1("""SELECT COUNT(*) c FROM storyboards WHERE episode_id=? AND deleted_at IS NULL
+                         AND (COALESCE(video_url,'')!='' OR COALESCE(composed_video_url,'')!='')""",
+                      (self.episode_id,))["c"]
+        self.export_empty.setVisible(ready == 0)
+        self.export_body.setVisible(ready > 0)
+        self.export_count.setText(tr("items_n", len(rows)) if rows else "")
+        ep = db.q1("SELECT status FROM episodes WHERE id=?", (self.episode_id,))
+        self.export_done_btn.setText("✓ " + (tr("done") if ep["status"] == "done" else tr("mark_done")))
+        while self.merge_strip.count():
+            it = self.merge_strip.takeAt(0)
+            w = it.widget()
             if w:
                 w.deleteLater()
-        for m in db.q("SELECT * FROM video_merges WHERE episode_id=? ORDER BY id DESC LIMIT 8", (self.episode_id,)):
-            box = W.make_card()
-            lay = QHBoxLayout(box)
-            lay.setContentsMargins(10, 6, 10, 6)
-            lay.addWidget(QLabel(f"{(m['created_at'] or '')[:16].replace('T',' ')} · {int(m['duration'] or 0)}s · {m['status']}"))
-            lay.addStretch(1)
-            dl = QPushButton(tr("download"))
-            dl.clicked.connect(lambda _=False, mm=m: self._download_merge(mm))
-            lay.addWidget(dl)
-            self.merge_list.addWidget(box)
-        self.merge_empty.setVisible(db.q1("SELECT id FROM video_merges WHERE episode_id=? LIMIT 1", (self.episode_id,)) is None)
-        while self.shot_list.count():
-            item = self.shot_list.takeAt(0)
-            w = item.widget()
+        self.merge_empty.setVisible(not rows)
+        self.merge_scroll.setVisible(bool(rows))
+        for r in rows:
+            self.merge_strip.addWidget(self._merge_card(r))
+        self.merge_strip.addStretch(1)
+        self._reload_shot_grid()
+        self._load_intro_state()
+
+    def _merge_card(self, m: dict) -> QWidget:
+        """成片卡:16:9 缩略 + 时间/时长 + 下载(对齐 .merge-card)。"""
+        card = W.make_card()
+        card.setFixedWidth(260)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+        done = m["status"] == "completed" and bool(m["merged_url"])
+        thumb = QFrame()
+        thumb.setFixedHeight(146)
+        thumb.setStyleSheet("background:#14161a; border-radius:8px; border:none;")
+        tl = QVBoxLayout(thumb)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        if done:
+            im = QLabel()
+            im.setAlignment(Qt.AlignCenter)
+            im.setPixmap(W.pixmap_from_media(m["merged_url"], 244, 146))
+            im.setCursor(Qt.PointingHandCursor)
+            im.mousePressEvent = lambda _e, mm=m: self._play_merge(mm)
+            tl.addWidget(im, 1)
+            play = QLabel("▶")
+            play.setAlignment(Qt.AlignCenter)
+            play.setStyleSheet("color:white; font-size:22px; background:transparent; border:none;")
+            tl.addWidget(play, 1)
+        else:
+            msg = (m["error_msg"] or tr("merge_failed")) if m["status"] == "failed" else tr("merging")
+            lab = QLabel(msg)
+            lab.setAlignment(Qt.AlignCenter)
+            lab.setWordWrap(True)
+            lab.setStyleSheet("color:#ff8b8f;" if m["status"] == "failed" else "color:#b8bcc4;")
+            tl.addWidget(lab, 1)
+        lay.addWidget(thumb)
+        meta = QHBoxLayout()
+        meta.addWidget(C.mono_tag((m["created_at"] or "")[:16].replace("T", " ")))
+        if m["duration"]:
+            meta.addWidget(C.mono_tag(f"{int(m['duration'])}s"))
+        meta.addStretch(1)
+        dl = QPushButton(tr("download"))
+        dl.setEnabled(done)
+        dl.clicked.connect(lambda _=False, mm=m: self._download_merge(mm))
+        meta.addWidget(dl)
+        lay.addLayout(meta)
+        return card
+
+    def _play_merge(self, m: dict):
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, m["merged_url"], tr("merge_preview_title")).exec()
+
+    # ── 镜头素材网格 ──
+    def _all_shots(self) -> list:
+        return [dict(r) for r in db.q(
+            "SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL "
+            "ORDER BY storyboard_number", (self.episode_id,))]
+
+    def _reload_shot_grid(self):
+        grid = self.shot_grid
+        while grid.count():
+            it = grid.takeAt(0)
+            w = it.widget()
             if w:
                 w.deleteLater()
         self.shot_checks.clear()
-        for r in db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,)):
-            if not (r["video_url"] or r["composed_video_url"]):
-                continue
-            cb = QCheckBox(f"#{r['storyboard_number']:02d} · {int(r['duration'] or 0)}s · {(r['content'] or '')[:46]}…")
-            cb.setChecked(True)
-            cb.stateChanged.connect(self._update_sel)
-            self.shot_checks[r["id"]] = cb
-            self.shot_list.addWidget(cb)
-        self._update_sel()
+        self.shot_cards.clear()
+        rows = self._all_shots()
+        usable_ids = {r["id"] for r in rows if r["video_url"] or r["composed_video_url"]}
+        self._selected &= usable_ids
+        if not self._selected and usable_ids:
+            self._selected = set(usable_ids)
+        for i, r in enumerate(rows):
+            grid.addWidget(self._shot_card(r), i // 4, i % 4)
+        grid.setRowStretch((len(rows) + 3) // 4, 1)
+        self._update_shot_stat(len(rows), len(usable_ids))
 
-    def _update_sel(self):
-        n = sum(1 for cb in self.shot_checks.values() if cb.isChecked())
-        self.merge_btn.setText(tr("merge_selected", n))
+    def _shot_card(self, r: dict) -> QWidget:
+        """镜头卡:16:9 缩略 + #NN + 时长 + 勾选框 + 描述 + 状态点(对齐 .exp-card)。"""
+        card = W.make_card()
+        card.setMinimumWidth(200)
+        sid = r["id"]
+        vid = r["video_url"] or r["composed_video_url"]
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+        thumb = QFrame()
+        thumb.setFixedHeight(112)
+        thumb.setStyleSheet("background:#14161a; border-radius:6px; border:none;")
+        tl = QVBoxLayout(thumb)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        if vid:
+            im = QLabel()
+            im.setAlignment(Qt.AlignCenter)
+            im.setPixmap(W.pixmap_from_media(r["first_frame_image"] or vid, 184, 112))
+            tl.addWidget(im, 1)
+        else:
+            ph = QLabel("🎬")
+            ph.setAlignment(Qt.AlignCenter)
+            ph.setStyleSheet("color:#8b909a;")
+            tl.addWidget(ph, 1)
+        idx = QLabel(f"#{int(r['storyboard_number']):02d}")
+        idx.setObjectName("taskIndex")
+        tl.addWidget(idx, 0, Qt.AlignLeft | Qt.AlignTop)
+        dur = QLabel(f"{int(r['duration'] or 0)}s")
+        dur.setObjectName("taskIndex")
+        tl.addWidget(dur, 0, Qt.AlignRight | Qt.AlignTop)
+        cb = QCheckBox("")
+        cb.setChecked(sid in self._selected)
+        cb.setEnabled(bool(vid))
+        cb.toggled.connect(lambda on, i=sid: self._on_shot_checked(i, on))
+        tl.addWidget(cb, 0, Qt.AlignRight | Qt.AlignBottom)
+        lay.addWidget(thumb)
+        line = QHBoxLayout()
+        name = QLabel((r["content"] or r["title"] or "—")[:26])
+        name.setObjectName("muted")
+        name.setToolTip(r["content"] or "")
+        line.addWidget(name, 1)
+        dot = QLabel("●")
+        dot.setStyleSheet("color:#16a34a;" if vid else "color:#c0c6cf;")
+        dot.setToolTip(tr("done") if vid else tr("pending"))
+        line.addWidget(dot)
+        lay.addLayout(line)
+        self._paint_shot_card(sid, card)
+        self.shot_checks[sid] = cb
+        self.shot_cards[sid] = card
+        card.setCursor(Qt.PointingHandCursor)
+        card.mousePressEvent = lambda _e, i=sid: self._toggle_shot(i)
+        return card
 
-    def _clear_sel(self):
-        for cb in self.shot_checks.values():
-            cb.setChecked(False)
+    @staticmethod
+    def _paint_shot_card(sid: int, card: QWidget):
+        card.setStyleSheet(
+            "QFrame#card{border:2px solid #4b6ef5;}" if getattr(card, "_sel", False)
+            else "QFrame#card{border:1px solid #e4e7ec;}")
+
+    def _toggle_shot(self, sid: int):
+        self._on_shot_checked(sid, sid not in self._selected)
+
+    def _on_shot_checked(self, sid: int, on: bool):
+        if on:
+            self._selected.add(sid)
+        else:
+            self._selected.discard(sid)
+        card = self.shot_cards.get(sid)
+        cb = self.shot_checks.get(sid)
+        if card:
+            card._sel = sid in self._selected
+            self._paint_shot_card(sid, card)
+        if cb and cb.isChecked() != (sid in self._selected):
+            cb.blockSignals(True)
+            cb.setChecked(sid in self._selected)
+            cb.blockSignals(False)
+        rows = self._all_shots()
+        usable = len([r for r in rows if r["video_url"] or r["composed_video_url"]])
+        self._update_shot_stat(len(rows), usable)
+
+    def _update_shot_stat(self, total: int, usable: int):
+        self.shot_stat.setText(tr("shot_stat", usable, total, len(self._selected)))
+        self.merge_btn.setText("▦ " + tr("merge_selected", len(self._selected)))
+        self.merge_btn.setEnabled(len(self._selected) >= 2)
+        self.sel_btn.setEnabled(bool(usable))
+        self.sel_btn.setText(tr("clear_selection") if self._selected else tr("select_all"))
+
+    def _toggle_select_all(self):
+        usable = {r["id"] for r in self._all_shots() if r["video_url"] or r["composed_video_url"]}
+        self._selected = set() if self._selected else set(usable)
+        self._reload_shot_grid()
+
+    # ── 片头 ──
+    def _load_intro_state(self):
+        d = db.q1("SELECT intro_title, intro_card, intro_overlay FROM dramas WHERE id=?",
+                  (self.drama_id,))
+        if not d:
+            return
+        self.intro_check.blockSignals(True)
+        self.intro_check.setChecked(bool(d["intro_card"] or d["intro_overlay"]))
+        self.intro_check.blockSignals(False)
+        self.intro_title.blockSignals(True)
+        self.intro_title.setText(d["intro_title"] or "")
+        self.intro_title.blockSignals(False)
+        self.intro_title.setVisible(self.intro_check.isChecked())
+        self.intro_title.editingFinished.connect(self._save_intro_state)
+
+    def _on_intro_toggle(self, on: bool):
+        self.intro_title.setVisible(on)
+        self._save_intro_state()
+
+    def _save_intro_state(self):
+        if not hasattr(self, "intro_check"):
+            return
+        db.ex("UPDATE dramas SET intro_title=?, intro_card=?, updated_at=? WHERE id=?",
+              (self.intro_title.text().strip(), 1 if self.intro_check.isChecked() else 0,
+               db.now(), self.drama_id))
 
     def _merge(self):
-        ids = [i for i, cb in self.shot_checks.items() if cb.isChecked()]
+        ids = [i for i in self._selected if self.shot_checks.get(i) and self.shot_checks[i].isEnabled()]
         if len(ids) < 2:
-            QMessageBox.information(self, tr("export_stage"), "≥2")
+            QMessageBox.information(self, tr("export_stage"), tr("merge_needs_two"))
             return
-        intro_on = self.intro_enabled.isChecked() if hasattr(self, "intro_enabled") else False
-        intro_title = self.intro_title_edit.text().strip() if hasattr(self, "intro_title_edit") else None
+        intro_on = self.intro_check.isChecked()
+        intro_title = self.intro_title.text().strip() or None
 
         def job(tid):
-            return merge_pipe.merge_episode(self.episode_id, ids,
-                                            intro_title=intro_title if intro_on else None,
-                                            intro_card=intro_on, intro_overlay=False)
+            return merge_pipe.merge_episode(
+                self.episode_id, ids,
+                intro_title=intro_title if intro_on else None,
+                intro_card=intro_on, intro_overlay=False)
+
         def done(tid, result, error):
             if error:
                 err(tr("export_stage"))
@@ -1709,19 +3038,29 @@ class EpisodePage(QWidget):
                 import os
                 os.startfile(str(result))  # noqa
             self._reload_export()
+
         TASKMGR.submit("merge", job, done, episode_id=self.episode_id)
 
     def _mark_done(self):
-        db.ex("UPDATE episodes SET status='completed', updated_at=? WHERE id=?", (db.now(), self.episode_id))
-        QMessageBox.information(self, tr("mark_done"), "OK")
+        db.ex("UPDATE episodes SET status='completed', updated_at=? WHERE id=?",
+              (db.now(), self.episode_id))
+        ok(tr("mark_done"))
+        self._reload_export()
 
     def _download_merge(self, merge: dict):
         from ..core import download as dl_mod
         try:
             p = dl_mod.download_merge(merge)
-            ok(f"已下载:{p.name}")
+            ok(f"{tr('download_ok')}:{p.name}")
         except Exception as e:  # noqa: BLE001
             err(str(e))
+
+    def _open_intro(self):
+        from .intro_dialog import IntroEditorDialog
+        d = db.q1("SELECT aspect_ratio FROM dramas WHERE id=?", (self.drama_id,))
+        aspect = (d["aspect_ratio"] or "16:9") if d else "16:9"
+        IntroEditorDialog(self, self.drama_id, aspect, on_saved=self._reload_export).exec()
+        self._load_intro_state()
 
     def _open_file(self, url: str | None):
         if url:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame,
@@ -50,23 +51,39 @@ def _chapter_name_missing(ep: dict) -> bool:
 
 
 class EpisodeCard(QFrame):
-    enter = Signal(int)
-    _reload_needed = Signal()
+    """集卡(对齐原版 .ep-card):EP 序号 + 可改名标题 + 五段进度 + 元信息 + 状态 + 底部动作。"""
 
-    def __init__(self, ep: dict, on_changed=None):
+    def __init__(self, ep: dict, is_novel: bool = False, on_changed=None,
+                 enter=None, rel_needed=None):
         super().__init__()
-        self._on_changed = on_changed
-        self.setObjectName("card")
+        self.ep = ep
         self.episode_id = ep["id"]
-        self.setFixedHeight(150)
+        self._is_novel = is_novel
+        self._on_changed = on_changed
+        self._enter = enter
+        self._reload_needed = rel_needed
+        self.episode_number = ep["episode_number"]
+        self.setObjectName("card")
+        self.setMinimumWidth(360)
+        self.setCursor(Qt.PointingHandCursor)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 12, 12)
-        lay.setSpacing(6)
+        lay.setContentsMargins(14, 12, 14, 10)
+        lay.setSpacing(10)
+
         top = QHBoxLayout()
-        num = QLabel(f"EP{ep['episode_number']:02d}")
-        num.setObjectName("muted")
-        top.addWidget(num)
-        # 内联改名
+        top.setSpacing(12)
+        num_box = QLabel()
+        num_box.setFixedSize(40, 40)
+        num_box.setAlignment(Qt.AlignCenter)
+        num_box.setStyleSheet(
+            "background:#f7f8fa; border:1px solid #e4e7ec; border-radius:10px;"
+            "color:#4e5969; font-family:monospace; font-size:15px; font-weight:600;")
+        num_box.setText(f"EP{ep['episode_number']:02d}")
+        num_box.setToolTip(f"EP{ep['episode_number']:02d}")
+        top.addWidget(num_box)
+
+        main = QVBoxLayout()
+        main.setSpacing(3)
         self.title_edit = QLineEdit(ep["title"] or tr("episode_n").format(ep["episode_number"]))
         f = self.title_edit.font()
         from PySide6.QtGui import QFont
@@ -74,126 +91,160 @@ class EpisodeCard(QFrame):
         f2.setBold(True)
         f2.setPointSize(11)
         self.title_edit.setFont(f2)
-        self.title_edit.setStyleSheet("border:none;background:transparent;")
-        self.title_edit.setToolTip("点击可直接改名")
+        self.title_edit.setStyleSheet("border:none;background:transparent;padding:0;")
+        self.title_edit.setToolTip(tr("click_rename"))
         self.title_edit.editingFinished.connect(self._rename)
         self.title_edit.returnPressed.connect(self._rename)
-        top.addWidget(self.title_edit, 1)
-        self.title_done: list = []  # 防止重复挂载
-        # 状态菜单
-        self.status_btn = QPushButton()
-        self.status_btn.setFixedWidth(64)
-        self.status_btn.setCursor(Qt.PointingHandCursor)
-        self._apply_status(ep.get("status") or "pending")
-        self.status_btn.clicked.connect(self._status_menu)
-        top.addWidget(self.status_btn)
-        lay.addLayout(top)
-        # 缺章节名且有正文时,标题下方显示「章节名」按钮(对齐原版 73b3339)
+        main.addWidget(self.title_edit)
+
+        # 缺章节名且已有正文 → AI 生成章节名
         if _chapter_name_missing(dict(ep)) and (ep.get("content") or "").strip():
             name_row = QHBoxLayout()
-            self.name_btn = QPushButton("✎ 章节名")
-            self.name_btn.setToolTip("正文已有标题行就直接取,否则 AI 参考前文摘要与总纲自动起名")
+            self.name_btn = QPushButton("✨ " + tr("ai_gen_title"))
+            self.name_btn.setToolTip(tr("gen_title_tip"))
             self.name_btn.setStyleSheet(
                 "QPushButton{border:1px dashed #4b6ef5;color:#4b6ef5;border-radius:10px;"
                 "padding:2px 10px;font-size:11px;background:transparent;}")
             self.name_btn.clicked.connect(lambda: self._gen_chapter_title(ep["id"]))
             name_row.addWidget(self.name_btn)
             name_row.addStretch(1)
-            lay.addLayout(name_row)
-        mid = QHBoxLayout()
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
-        if ep["script_content"]:
-            chips.addWidget(W.tag(tr("script_entered")))
-        if ep["video_url"]:
-            chips.addWidget(W.tag(tr("merged_tag")))
-        mid.addLayout(chips)
-        # 制作阶段条(按产物判定)
+            main.addLayout(name_row)
+
+        # 五段进度(小说正文 / 剧本 / 资产 / 分镜 / 成片)
         idx = ep_stage_index(ep)
-        seg_row = QHBoxLayout()
-        seg_row.setSpacing(3)
+        stage_row = QHBoxLayout()
+        stage_row.setSpacing(5)
+        track = QHBoxLayout()
+        track.setSpacing(2)
         for i, st in enumerate(EP_STAGES):
-            seg = QLabel(EP_STAGE_CN[st])
+            seg = QLabel()
+            seg.setFixedSize(12, 3)
             if i < idx:
-                seg.setStyleSheet("background:#d9f2e3;color:#16a34a;border-radius:3px;padding:1px 5px;font-size:10px;")
+                seg.setStyleSheet("background:#16a34a;border-radius:2px;")
             elif i == idx:
-                seg.setStyleSheet("background:#4b6ef5;color:#fff;border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700;")
+                seg.setStyleSheet("background:#4b6ef5;border-radius:2px;")
             else:
-                seg.setStyleSheet("background:#f0f1f4;color:#c0c6cf;border-radius:3px;padding:1px 5px;font-size:10px;")
-            seg_row.addWidget(seg)
-        seg_row.addStretch(1)
-        mid.addLayout(seg_row)
-        # 字数进度
+                seg.setStyleSheet("background:#dfe3e8;border-radius:2px;")
+            seg.setToolTip(EP_STAGE_CN[st])
+            track.addWidget(seg)
+        stage_row.addLayout(track)
+        stage_text = QLabel(EP_STAGE_CN[EP_STAGES[idx]])
+        stage_text.setStyleSheet("color:#86909c; font-size:10.5px;")
+        stage_row.addWidget(stage_text)
+        stage_row.addStretch(1)
+        main.addLayout(stage_row)
+
+        # 元信息行:字数 / 时长 / 已录入 / 已合成 / 时间
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
         wc = len((ep.get("content") or "").strip())
         tw = ep.get("target_words") or 0
         if wc:
-            warn_cls = wc < int(tw * 0.8) if tw else False
-            wl = QLabel(f"{wc} / {tw} 字" if tw else f"{wc} 字")
-            wl.setObjectName("muted")
-            if warn_cls:
-                wl.setStyleSheet("color:#d97706;font-weight:600;")
-            mid.addWidget(wl)
+            warn = bool(tw) and wc < int(tw * 0.8)
+            wl = QLabel(f"✎ {wc}" + (f" / {tw}" if tw else "") + " 字")
+            wl.setStyleSheet(("color:#e0794b;" if warn else "color:#86909c;")
+                             + " font-size:11px;")
         else:
-            wl = QLabel("未写")
+            wl = QLabel(tr("not_written"))
             wl.setObjectName("muted")
-            mid.addWidget(wl)
-        mid.addStretch(1)
-        # 分辨率菜单
+        meta_row.addWidget(wl)
+        if ep.get("duration"):
+            dl = QLabel(f"🕘 {int(ep['duration'])}s")
+            dl.setObjectName("muted")
+            meta_row.addWidget(dl)
+        if ep.get("script_content"):
+            sl = QLabel("📄 " + tr("script_entered"))
+            sl.setStyleSheet("color:#16a34a; font-size:11px;")
+            meta_row.addWidget(sl)
+        if ep.get("video_url"):
+            vl = QLabel("🎬 " + tr("merged_tag"))
+            vl.setStyleSheet("color:#16a34a; font-size:11px;")
+            meta_row.addWidget(vl)
+        meta_row.addStretch(1)
+        tsl = QLabel(_rel_time(ep.get("updated_at")))
+        tsl.setObjectName("muted")
+        meta_row.addWidget(tsl)
+        main.addLayout(meta_row)
+        top.addLayout(main, 1)
+
+        self.status_btn = QPushButton()
+        self.status_btn.setFixedWidth(72)
+        self.status_btn.setCursor(Qt.PointingHandCursor)
+        self._apply_status(ep.get("status") or "pending")
+        self.status_btn.clicked.connect(self._status_menu)
+        top.addWidget(self.status_btn)
+        lay.addLayout(top)
+
+        # 底部动作条
+        foot = QHBoxLayout()
+        foot.setSpacing(6)
         self.res_btn = QPushButton(ep["resolution"] or "720p")
-        self.res_btn.setFixedWidth(66)
+        self.res_btn.setFixedWidth(70)
         self.res_btn.setCursor(Qt.PointingHandCursor)
+        self.res_btn.setStyleSheet(
+            "QPushButton{background:#f7f8fa;border:none;border-radius:6px;"
+            "font-size:11px;font-weight:600;}")
+        self.res_btn.setToolTip(tr("res_tip"))
         self.res_btn.clicked.connect(self._res_menu)
-        mid.addWidget(self.res_btn)
-        n_done = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=? AND video_url IS NOT NULL", (ep["id"],))["c"]
+        foot.addWidget(self.res_btn)
+        n_done = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=? "
+                       "AND COALESCE(video_url,'')!=''", (ep["id"],))["c"]
         n_all = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (ep["id"],))["c"]
         st = QLabel(f"{n_done}/{n_all}")
         st.setObjectName("muted")
-        mid.addWidget(st)
-        mid.addStretch(1)
-        self.cover_btn = EpisodeCoverButton(ep, on_done=self._on_changed)
-        self.cover_btn.setFixedHeight(30)
-        mid.addWidget(self.cover_btn)
-        del_btn = W.danger_btn(tr("delete"))
-        del_btn.setFixedHeight(30)
-        del_btn.setMinimumWidth(56)
+        foot.addWidget(st)
+        foot.addStretch(1)
+        del_btn = W.danger_btn("🗑")
+        del_btn.setFixedSize(30, 28)
         del_btn.setToolTip(tr("delete_episode"))
         del_btn.clicked.connect(self._del)
-        mid.addWidget(del_btn)
-        enter = W.primary_btn(tr("enter_production"))
-        enter.setFixedHeight(30)
-        enter.clicked.connect(lambda: self.enter.emit(self.episode_id))
-        mid.addWidget(enter)
-        lay.addLayout(mid)
+        foot.addWidget(del_btn)
+        enter = W.primary_btn(tr("write_novel") if is_novel else tr("enter_production") + " ›")
+        enter.setFixedHeight(28)
+        enter.clicked.connect(lambda: self._enter(self.episode_id))
+        foot.addWidget(enter)
+        lay.addLayout(foot)
+
+    def mousePressEvent(self, ev):
+        if getattr(self, "_btn_clicked", False):
+            self._btn_clicked = False
+        else:
+            self._enter(self.episode_id)
+        super().mousePressEvent(ev)
 
     def _gen_chapter_title(self, episode_id: int):
-        """一键章节名:优先从正文首行提取,提取不到才调 AI。"""
         from ..core.taskmgr import TASKMGR
+
         def job(tid):
             from ..pipeline import novel as novel_pipe
             return novel_pipe.gen_chapter_title(episode_id)
+
         def done(tid, result, error):
             if error:
-                err(e_)
+                err(error)
                 return
             name, src = result
             ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))
-            self._reload_needed.emit()
+            if self._reload_needed:
+                self._reload_needed.emit()
+
         TASKMGR.submit("novel_title", job, done, episode_id=episode_id)
 
     def _rename(self):
-        from PySide6.QtWidgets import QApplication
         title = self.title_edit.text().strip()
         if title:
-            db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?", (title, db.now(), self.episode_id))
-            QApplication.clipboard()  # noop keep
+            db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?",
+                  (title, db.now(), self.episode_id))
+        else:
+            self.title_edit.setText(tr("episode_n").format(self.episode_number))
         self.title_edit.clearFocus()
 
     def _apply_status(self, status: str):
         label, color = STATUS_META.get(status, STATUS_META["pending"])
-        self.status_btn.setText(label)
+        self.status_btn.setText(f"●  {label}")
         self.status_btn.setStyleSheet(
-            f"QPushButton{{color:{color};border:1px solid {color}44;border-radius:10px;"
-            f"background:transparent;font-size:11px;}}")
+            f"QPushButton{{color:{color};background:#f7f8fa;border:none;"
+            f"border-radius:20px;font-size:11px;padding:3px 10px;}}")
 
     def _status_menu(self):
         m = QMenu(self)
@@ -204,36 +255,89 @@ class EpisodeCard(QFrame):
         m.exec()
 
     def _set_status(self, status: str):
-        db.ex("UPDATE episodes SET status=?, updated_at=? WHERE id=?", (status, db.now(), self.episode_id))
+        db.ex("UPDATE episodes SET status=?, updated_at=? WHERE id=?",
+              (status, db.now(), self.episode_id))
         self._apply_status(status)
         ok(f"已标记为「{STATUS_META[status][0]}」")
 
     def _res_menu(self):
         m = QMenu(self)
-        for res in ("480p", "720p", "1080p"):
-            m.addAction(res).triggered.connect(lambda _=False, r=res: self._set_res(r))
+        for res, label in (("720p", "720p · 高清"), ("480p", "480p · 流畅")):
+            m.addAction(label).triggered.connect(lambda _=False, r=res: self._set_res(r))
         m.exec()
 
     def _set_res(self, res: str):
-        db.ex("UPDATE episodes SET resolution=?, updated_at=? WHERE id=?", (res, db.now(), self.episode_id))
+        db.ex("UPDATE episodes SET resolution=?, updated_at=? WHERE id=?",
+              (res, db.now(), self.episode_id))
         self.res_btn.setText(res)
 
-    def _del(self, eid=None, num=None):
-        eid = eid or self.episode_id
-        ep = db.q1("SELECT episode_number FROM episodes WHERE id=?", (eid,))
-        if QMessageBox.question(self, tr("delete_episode"), f"{tr('episode_n').format(ep['episode_number'])} → {tr('delete')}?") == QMessageBox.Yes:
-            for t in ("storyboard_characters", "storyboard_props"):
-                db.ex(f"DELETE FROM {t} WHERE storyboard_id IN (SELECT id FROM storyboards WHERE episode_id=?)", (eid,))
-            db.ex("DELETE FROM storyboards WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM comic_panel_characters WHERE panel_id IN (SELECT id FROM comic_panels WHERE episode_id=?)", (eid,))
-            db.ex("DELETE FROM comic_panels WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM episode_characters WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM episode_scenes WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM episode_props WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM video_merges WHERE episode_id=?", (eid,))
-            db.ex("DELETE FROM episodes WHERE id=?", (eid,))
-            from ..core.taskmgr import TASKMGR
-            TASKMGR.updated.emit()
+    def _del(self):
+        if QMessageBox.question(
+                self, tr("delete_episode"),
+                f"{tr('episode_n').format(self.episode_number)} → {tr('delete')}?") != QMessageBox.Yes:
+            return
+        for t in ("storyboard_characters", "storyboard_props"):
+            db.ex(f"DELETE FROM {t} WHERE storyboard_id IN "
+                  "(SELECT id FROM storyboards WHERE episode_id=?)", (self.episode_id,))
+        db.ex("DELETE FROM storyboards WHERE episode_id=?", (self.episode_id,))
+        db.ex("DELETE FROM comic_panel_characters WHERE panel_id IN "
+              "(SELECT id FROM comic_panels WHERE episode_id=?)", (self.episode_id,))
+        db.ex("DELETE FROM comic_panels WHERE episode_id=?", (self.episode_id,))
+        for t in ("episode_characters", "episode_scenes", "episode_props"):
+            db.ex(f"DELETE FROM {t} WHERE episode_id=?", (self.episode_id,))
+        db.ex("DELETE FROM video_merges WHERE episode_id=?", (self.episode_id,))
+        db.ex("DELETE FROM episodes WHERE id=?", (self.episode_id,))
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.updated.emit()
+        if self._on_changed:
+            self._on_changed()
+
+
+def _rel_time(ts: str) -> str:
+    if not ts:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        secs = (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:  # noqa: BLE001
+        return ts[:16]
+    if secs < 60:
+        return "刚刚"
+    if secs < 3600:
+        return f"{int(secs // 60)} 分钟前"
+    if secs < 86400:
+        return f"{int(secs // 3600)} 小时前"
+    return f"{dt.month}/{dt.day}"
+
+
+class AddEpisodeCard(QFrame):
+    """网格末尾的「添加第 N 集」占位卡(对齐 .card.ep-empty)。"""
+
+    def __init__(self, number: int, on_click):
+        super().__init__()
+        self.setObjectName("card")
+        self.setMinimumWidth(360)
+        self.setMinimumHeight(104)
+        self.setCursor(Qt.PointingHandCursor)
+        self._on_click = on_click
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+        lay.addStretch(1)
+        icon = QLabel("+")
+        icon.setFixedSize(28, 28)
+        icon.setAlignment(Qt.AlignCenter)
+        icon.setStyleSheet("background:#f7f8fa; border-radius:14px; color:#86909c;"
+                           "font-size:16px; border:1px solid #e4e7ec;")
+        lay.addWidget(icon)
+        text = QLabel(tr("add_episode_n", number))
+        text.setStyleSheet("color:#86909c; font-size:12.5px; border:none;")
+        lay.addWidget(text)
+        lay.addStretch(1)
+
+    def mousePressEvent(self, ev):
+        self._on_click()
+        super().mousePressEvent(ev)
 
 
 class NewEpisodeDialog(QDialog):
@@ -437,13 +541,40 @@ class ProjectPage(QWidget):
         root.setContentsMargins(28, 24, 28, 24)
         root.setSpacing(12)
 
-        head = QHBoxLayout()
+        head_card = QFrame()
+        head_card.setObjectName("card")
+        head = QHBoxLayout(head_card)
+        head.setContentsMargins(16, 10, 16, 10)
+        head.setSpacing(12)
         back = QPushButton("← " + tr("back"))
+        back.setFixedSize(30, 30)
+        back.setStyleSheet("QPushButton{background:#f7f8fa;border:none;border-radius:15px;"
+                           "color:#4e5969;}")
         back.clicked.connect(self._go_back)
         self.title = W.h1("")
+        self.title.setStyleSheet("font-size:17px; font-weight:700;")
+        head_info = QVBoxLayout()
+        head_info.setSpacing(3)
+        top_line = QHBoxLayout()
+        top_line.setSpacing(8)
+        top_line.addWidget(self.title)
+        self.style_tag = W.tag("")
+        self.style_tag.setStyleSheet("background:#eef1fe; color:#4b6ef5; border-radius:4px;"
+                                     "padding:2px 8px; font-size:12px;")
+        top_line.addWidget(self.style_tag)
+        self.imit_tag = W.tag(tr("imitated"))
+        self.imit_tag.setStyleSheet(
+            "background:rgba(168,85,247,0.08); color:#a855f7;"
+            "border:1px solid rgba(168,85,247,0.45); border-radius:4px;"
+            "padding:2px 8px; font-size:12px;")
+        top_line.addWidget(self.imit_tag)
+        top_line.addStretch(1)
+        head_info.addLayout(top_line)
+        self.sub = QLabel("")
+        self.sub.setObjectName("muted")
+        head_info.addWidget(self.sub)
         head.addWidget(back)
-        head.addWidget(self.title)
-        head.addStretch(1)
+        head.addLayout(head_info, 1)
         self.settings_btn = QPushButton("⚙ " + tr("project_settings"))
         self.settings_btn.clicked.connect(self._open_settings)
         head.addWidget(self.settings_btn)
@@ -454,10 +585,8 @@ class ProjectPage(QWidget):
         self.book_btn.setToolTip("导入整本 TXT → 结构分析 → 依样仿写(新建项目)")
         self.book_btn.clicked.connect(self._book_import)
         head.addWidget(self.book_btn)
-        root.addLayout(head)
-
-        self.sub = W.muted("")
-        root.addWidget(self.sub)
+        root.addWidget(head_card)
+        self.head_card = head_card
 
         # 项目封面区在 load() 中按 drama_id 构建
         self.cover_holder = QWidget()
@@ -469,11 +598,11 @@ class ProjectPage(QWidget):
         self.ep_lay = QVBoxLayout(ep_holder)
         self.ep_lay.setContentsMargins(0, 10, 0, 10)
         self.ep_lay.setSpacing(12)
-        ep_scroll = QScrollArea()
-        ep_scroll.setWidgetResizable(True)
-        ep_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        ep_scroll.setWidget(ep_holder)
-        self.tabs.addTab(ep_scroll, tr("episodes"))
+        self.ep_scroll = QScrollArea()
+        self.ep_scroll.setWidgetResizable(True)
+        self.ep_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        self.ep_scroll.setWidget(ep_holder)
+        self.tabs.addTab(self.ep_scroll, tr("episodes"))
         lib_holder = QWidget()
         lib_root = QVBoxLayout(lib_holder)
         lib_bar = QHBoxLayout()
@@ -528,11 +657,21 @@ class ProjectPage(QWidget):
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
         if not d:
             return
+        self._drama = dict(d)
         self.title.setText(d["title"])
         nc = db.q1("SELECT COUNT(*) c FROM characters WHERE drama_id=?", (drama_id,))["c"]
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama_id,))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]
-        self.sub.setText(f"{tr('characters_n', nc)} · {tr('scenes_n', ns)} · {tr('episodes_n', ne)}")
+        style = db.q1("SELECT name FROM style_presets WHERE value=?", (d["style"],))
+        self.style_tag.setText(style["name"] if style else "")
+        self.style_tag.setVisible(bool(style))
+        nm = db.jload(d["novel_meta"], {}) or {}
+        src = nm.get("imitated_from") or {}
+        self.imit_tag.setVisible(bool(src.get("drama_id")))
+        if src.get("source_title"):
+            self.imit_tag.setText(tr("source_book", src["source_title"]))
+        self.sub.setText(f"👤 {tr('characters_n', nc)}   🖼 {tr('scenes_n', ns)}   "
+                          f"🎞 {tr('episodes_n', ne)}")
         # 项目封面区(3:4 竖版 + 提示词 + 生成 + 放大预览)
         ch = self.cover_holder.layout()
         while ch.count():
@@ -560,6 +699,16 @@ class ProjectPage(QWidget):
             return False
         return current < int(target)
 
+    def _ep_cols(self) -> int:
+        """集卡列数:按实际可用宽度算(窗口窄时先建一列,resize 后重排)。"""
+        avail = max(self.ep_scroll.viewport().width(), self.width() - 120)
+        return max(1, avail // 380)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if getattr(self, "drama_id", 0):
+            self.reload()
+
     def reload(self):
         while self.ep_lay.count():
             item = self.ep_lay.takeAt(0)
@@ -569,20 +718,27 @@ class ProjectPage(QWidget):
         rows = db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
         counts = {r["episode_id"]: r["c"] for r in db.q(
             "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
-        for ep in rows:
+        is_novel = self._drama["work_type"] == "novel" if self._drama else False
+        cells = list(rows)
+        if self.can_add_episode():
+            cells = list(rows) + [None]           # 末尾放「添加第 N 集」占位卡
+        cols = self._ep_cols()
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        self.ep_lay.addLayout(grid)
+        for i, ep in enumerate(cells):
+            if ep is None:
+                grid.addWidget(AddEpisodeCard(rows[-1]["episode_number"] + 1 if rows else 1,
+                                              self._add_episode), i // cols, i % cols)
+                continue
             d = dict(ep)
             d["storyboard_count"] = counts.get(ep["id"], 0)
-            card = EpisodeCard(d, on_changed=self.reload)
-            card.enter.connect(self._on_enter)
-            card._reload_needed.connect(self.reload)
-            self.ep_lay.addWidget(card)
-        if self.can_add_episode():
-            add = QPushButton("＋ " + tr("add_episode"))
-            add.clicked.connect(self._add_episode)
-            self.ep_lay.addWidget(add)
-        else:
-            hint = W.muted("项目已设单集完结(集数=1)或已达计划总集数;如需继续添加,请在「项目设置」里调整")
-            self.ep_lay.addWidget(hint)
+            grid.addWidget(EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
+                                       enter=self._on_enter, rel_needed=self),
+                           i // cols, i % cols)
+        if not self.can_add_episode():
+            self.ep_lay.addWidget(W.muted(tr("ep_limit_hint")))
         self.ep_lay.addStretch(1)
         while self.lib_grid.count():
             item = self.lib_grid.takeAt(0)
