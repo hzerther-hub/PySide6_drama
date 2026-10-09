@@ -600,6 +600,17 @@ class ProjectPage(QWidget):
         self.ep_lay = QVBoxLayout(ep_holder)
         self.ep_lay.setContentsMargins(0, 10, 0, 10)
         self.ep_lay.setSpacing(12)
+        # 集卡网格常驻:reload 只清这个 grid 的条目。
+        # (若每次 reload 新建嵌套 QGridLayout 再塞进 ep_lay,ep_lay.takeAt() 取不到嵌套布局里的
+        #  卡片——它们已被重新挂到父控件上,旧卡片会留在界面上,表现为重复的「添加第 N 集」)
+        self.ep_grid = QGridLayout()
+        self.ep_grid.setContentsMargins(0, 0, 0, 0)
+        self.ep_grid.setSpacing(10)
+        self.ep_lay.addLayout(self.ep_grid)
+        self.ep_hint = W.muted("")
+        self.ep_hint.setVisible(False)
+        self.ep_lay.addWidget(self.ep_hint)
+        self.ep_lay.addStretch(1)
         self.ep_scroll = QScrollArea()
         self.ep_scroll.setWidgetResizable(True)
         self.ep_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
@@ -712,10 +723,13 @@ class ProjectPage(QWidget):
             self.reload()
 
     def reload(self):
-        while self.ep_lay.count():
-            item = self.ep_lay.takeAt(0)
+        # setParent(None) 立即摘除;deleteLater 在这里不生效 —— 旧卡片仍挂在父控件上,
+        # 表现为多出一张重复的「添加第 N 集」。
+        while self.ep_grid.count():
+            item = self.ep_grid.takeAt(0)
             w = item.widget()
             if w:
+                w.setParent(None)
                 w.deleteLater()
         rows = db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
         counts = {r["episode_id"]: r["c"] for r in db.q(
@@ -725,10 +739,7 @@ class ProjectPage(QWidget):
         if self.can_add_episode():
             cells = list(rows) + [None]           # 末尾放「添加第 N 集」占位卡
         cols = self._ep_cols()
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(10)
-        self.ep_lay.addLayout(grid)
+        grid = self.ep_grid
         for i, ep in enumerate(cells):
             if ep is None:
                 grid.addWidget(AddEpisodeCard(rows[-1]["episode_number"] + 1 if rows else 1,
@@ -739,9 +750,8 @@ class ProjectPage(QWidget):
             grid.addWidget(EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
                                        enter=self._on_enter, rel_needed=self),
                            i // cols, i % cols)
-        if not self.can_add_episode():
-            self.ep_lay.addWidget(W.muted(tr("ep_limit_hint")))
-        self.ep_lay.addStretch(1)
+        self.ep_hint.setText("" if self.can_add_episode() else tr("ep_limit_hint"))
+        self.ep_hint.setVisible(not self.can_add_episode())
         while self.lib_grid.count():
             item = self.lib_grid.takeAt(0)
             w = item.widget()
