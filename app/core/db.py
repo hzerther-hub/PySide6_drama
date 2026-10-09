@@ -63,6 +63,9 @@ DDL: list[str] = [
       ethnicity TEXT DEFAULT 'auto',
       creative_description TEXT, skip_creative INTEGER DEFAULT 0, total_episodes INTEGER,
       language TEXT DEFAULT 'auto',
+      intro_title TEXT, intro_font TEXT, intro_font_size REAL,
+      intro_pos_x REAL, intro_pos_y REAL, intro_duration REAL,
+      intro_card INTEGER DEFAULT 1, intro_overlay INTEGER DEFAULT 0,
       metadata TEXT,
       thumbnail TEXT, status TEXT DEFAULT 'pending',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
@@ -350,7 +353,16 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN subtitle_url TEXT",
                 "ALTER TABLE storyboards ADD COLUMN setting_tags TEXT",
                 "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT",
-                "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'"):
+                "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'",
+                "ALTER TABLE dramas ADD COLUMN intro_title TEXT",
+                "ALTER TABLE dramas ADD COLUMN intro_font TEXT",
+                "ALTER TABLE dramas ADD COLUMN intro_font_size REAL",
+                "ALTER TABLE dramas ADD COLUMN intro_pos_x REAL",
+                "ALTER TABLE dramas ADD COLUMN intro_pos_y REAL",
+                "ALTER TABLE dramas ADD COLUMN intro_duration REAL",
+                "ALTER TABLE dramas ADD COLUMN intro_card INTEGER DEFAULT 1",
+                "ALTER TABLE dramas ADD COLUMN intro_overlay INTEGER DEFAULT 0",
+                "ALTER TABLE ai_service_configs ADD COLUMN api_format TEXT DEFAULT 'openai'"):
         try:
             db.execute(col)
         except Exception:  # noqa: BLE001

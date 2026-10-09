@@ -448,19 +448,39 @@ def bulk_create_episodes(drama_id: int, titles: list[str] | None = None, count: 
     return {"created": len(created), "start_number": start, "total": total, "episodes": created}
 
 
+def check_prev_chapter(drama_id: int, episode_number: int) -> None:
+    """续写红线(对齐原版 48f36da):前章无正文时拒绝续写。
+
+    第 N 章开写前要读第 N-1 章结尾,前章是空的就会产出脱离前文的垃圾章节。
+    第 1 章放行。
+    """
+    if int(episode_number) <= 1:
+        return
+    prev = db.q1("""SELECT episode_number, content FROM episodes
+                    WHERE drama_id=? AND episode_number<?
+                    ORDER BY episode_number DESC LIMIT 1""", (drama_id, episode_number))
+    if prev and not (prev["content"] or "").strip():
+        raise RuntimeError(f"上一章(第 {prev['episode_number']} 集)还没有正文,不能续写")
+
+
 def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = False,
                          config_id: int | None = None, lang: str | None = None,
                          on_progress=None) -> dict:
-    """批量写章(顺序严格按传入的 episode_ids,防标题写进A章正文写进B章)。
+    """批量写章(**强制串行**,顺序按章节号升序,防标题写进A章正文写进B章)。
 
-    对齐原版未提交批次:默认**已有正文的章节整批拒绝**(需 force=True 才放行),
-    防止误覆盖已完成内容。
+    对齐原版 48f36da:并发度硬编码为 1 —— 第 N 章开写前要读第 N-1 章结尾 +
+    事实台账 + 未回收伏笔 + 卷段摘要,并行会让后章取不到前文、把同一情节整章重写。
+    另有:默认已有正文的章节整批拒绝(force=True 才放行);续写红线(前章无正文拒写)。
     """
     rows = [r for r in (db.q1(f"SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
                         for i in episode_ids)]
     rows = [r for r in rows if r]
     if not rows:
         return {"total": 0, "ok": 0, "failed": 0}
+    # 按章节号升序(调用方乱序也保证先写第 1 章)
+    rows.sort(key=lambda r: r["episode_number"])
+    # 续写红线:整批第一集的前一章必须有正文
+    check_prev_chapter(drama_id, rows[0]["episode_number"])
     if not force:
         dup = [r["episode_number"] for r in rows if len((r["content"] or "").strip()) >= 200]
         if dup:
@@ -469,6 +489,8 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
     ok = failed = 0
     for r in rows:
         try:
+            # 生成前逐章再校验(双保险):前章失败则后续章自动被拦停,不接力产出垃圾
+            check_prev_chapter(drama_id, r["episode_number"])
             write_chapter_with_review(r["id"], config_id=config_id, lang=lang)
             ok += 1
         except Exception:  # noqa: BLE001

@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import requests
+from PIL import Image
 
 from ..core import config
 from . import registry
@@ -29,10 +30,30 @@ def _b64_save(b64: str, out: Path) -> Path:
     return out
 
 
+def _ref_data_url(path: str | Path) -> str | None:
+    """参考图本地路径 → 压缩 data URL(≤768px JPEG q68,对齐原版压缩口径);失败返回 None。"""
+    try:
+        import io
+        p = Path(path)
+        if not p.exists():
+            return None
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            im.thumbnail((768, 768))
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=68)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None) -> tuple[Path, str]:
-    """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。"""
+    """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。
+
+    仅 agnes 注入(extra_body.image[],≤6 张压缩 data URI);其余 provider 忽略。
+    """
     cfg = registry.check_ready("image", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     out_name = out_name or f"{uuid.uuid4().hex}.png"
@@ -78,6 +99,10 @@ def generate_image(prompt: str, out_name: str | None = None,
         body = {"model": cfg["model"], "prompt": prompt, "n": 1}
         if size:
             body["size"] = size
+        # 图生图参考(对齐原版 agnes-image adapter:extra_body.image[] data URI,≤6 张)
+        refs = [r for r in (_ref_data_url(x) for x in (reference_images or [])[:6]) if r]
+        if refs:
+            body["extra_body"] = {"image": refs}
         resp = requests.post(submit, json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")

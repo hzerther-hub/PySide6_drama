@@ -340,7 +340,10 @@ class ClonePage(QWidget):
                 head.addWidget(W.tag(tr("done")))
             head.addStretch(1)
             info.addLayout(head)
-            desc = QLabel(f"{b.get('shot','')} · {b.get('action','')}  {('产品:' + b.get('product_use','')) if b.get('product_use') else ''}")
+            steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
+            action_txt = "；".join(f"{i}.{s}" for i, s in enumerate(steps, 1)) if steps else b.get("action", "")
+            head_bits = " · ".join(x for x in (b.get("shot", ""), b.get("camera", "")) if x)
+            desc = QLabel(f"{head_bits}  {action_txt}  {('产品:' + b.get('product_use','')) if b.get('product_use') else ''}")
             desc.setWordWrap(True)
             info.addWidget(desc)
             if b.get("line"):

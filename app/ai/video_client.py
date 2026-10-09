@@ -441,3 +441,46 @@ def test_config(cfg: dict) -> tuple[bool, str]:
         return True, "OK(跳过真实提交)"
     except Exception as e:  # noqa: BLE001
         return False, str(e)[:300]
+
+# ── 视频限流治理(对齐原版 4790a54)──
+RATE_LIMIT_BACKOFF_CAP_S = 120        # 退避封顶 2 分钟
+RATE_LIMIT_BACKOFF_BASE_S = 30        # 退避基数 30 秒
+VIDEO_CREATE_SPACING_S = 15           # 视频提交全局串行门:两次提交最小间隔 15 秒
+_video_chain: list = [None]            # 串行链
+_last_video_create_at: list = [0.0]
+
+
+def _is_rate_limited(exc) -> bool:
+    """429/503 或响应体含限流关键词 → 触发长预算退避。"""
+    s = str(exc).lower()
+    return ("429" in s or "503" in s or "queue_full" in s
+            or "too many requests" in s or "rate limit" in s)
+
+
+def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:
+    """退避计算:优先 Retry-After,否则 30s × 1.5^n,封顶 120s。"""
+    if retry_after:
+        return min(float(retry_after), RATE_LIMIT_BACKOFF_CAP_S)
+    return min(RATE_LIMIT_BACKOFF_BASE_S * (1.5 ** min(attempt, 6)), RATE_LIMIT_BACKOFF_CAP_S)
+
+
+def pass_video_create_gate():
+    """视频提交全局串行门(对齐原版 passVideoCreateGate):包住提交全程。
+
+    多任务并发时按 15 秒最小间隔排队,避免同时踩上游限流。
+    """
+    import threading
+    import time as _t
+    lock = threading.Lock()
+
+    def run():
+        with lock:
+            wait = _last_video_create_at[0] + VIDEO_CREATE_SPACING_S - _t.time()
+            if wait > 0:
+                _t.sleep(wait)
+            _last_video_create_at[0] = _t.time()
+
+    prev = _video_chain[0] or (lambda: None)
+    nxt = threading.Thread(target=lambda: (prev(), run()))
+    _video_chain[0] = nxt
+    return nxt
