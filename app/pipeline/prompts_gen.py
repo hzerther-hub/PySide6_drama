@@ -7,7 +7,8 @@ from ..core import db
 
 
 def _style_prefix(drama_id: int) -> str:
-    return db.style_prompt(db.drama_style(drama_id))
+    from .comic import _style_for
+    return _style_for(drama_id)
 
 
 def character_prompt(character_id: int, config_id: int | None = None, lang: str | None = None) -> str:

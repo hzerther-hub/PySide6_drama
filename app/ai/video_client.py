@@ -65,7 +65,13 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     reference_images:@角色 形象参考图本地路径列表(角色一致性)。
     agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
     返回 (本地路径, provider)。
+
+    **平台级质量守卫**:prompt 统一追加视频质量要求 + 表演克制 + 节奏三层守卫(各自 marker 幂等)。
+    视频模型对肢体畸形与强情绪词(尖叫/嘶吼/痛哭)都天生放大,需在平台层压住;
+    确需爆发表情的镜头,在分镜 video_prompt 里显式写「情绪爆发」覆盖表演守卫。
     """
+    from .prompt_guards import apply_video_guards
+    prompt = apply_video_guards(prompt)
     cfg = registry.check_ready("video", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     headers = {"Content-Type": "application/json"}

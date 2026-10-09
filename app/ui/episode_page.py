@@ -2806,7 +2806,9 @@ class EpisodePage(QWidget):
         self._reload_comic()
         def job(tid):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id, config_id=self.text_model.currentData())
-            out, _p = image_client.generate_image(fp, config_id=self.image_model.currentData())
+            out, _p = image_client.generate_image(
+                fp, config_id=self.image_model.currentData(),
+                people=comic_pipe.panel_people_count(panel_id))
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), panel_id))
             return str(out)

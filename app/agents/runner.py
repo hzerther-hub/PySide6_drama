@@ -51,11 +51,20 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
         json_mode=json_output, config_id=config_id, image_urls=image_urls)
 
 
+JSON_HINT = "请只输出 JSON,不要任何解释文字、不要 Markdown 代码块标记。"
+
+
 def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None,
                    config_id: int | None = None,
                    image_urls: list[str] | None = None) -> dict | list:
-    """跑 Agent 并解析 JSON;解析失败时抛 RuntimeError(带原始输出片段)。"""
-    raw = run_agent(agent_type, user_prompt, lang=lang, json_output=True,
+    """跑 Agent 并解析 JSON;解析失败时抛 RuntimeError(带原始输出片段)。
+
+    **总是把「只输出 JSON」写进用户消息**:部分网关要求 messages 里出现 json 字样才肯用
+    response_format=json_object,而 workspace/prompts/*.md 里的系统提示不一定含该词
+    (实测 storyboard_breaker 的 md 就没有),否则整个 Agent 调用 400。
+    """
+    prompt = user_prompt if JSON_HINT in user_prompt else user_prompt + "\n\n" + JSON_HINT
+    raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
                     temperature=0.4, config_id=config_id, image_urls=image_urls)
     data = extract_json(raw)
     if data is None:

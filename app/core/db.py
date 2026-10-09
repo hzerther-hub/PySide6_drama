@@ -338,6 +338,7 @@ def init_db() -> None:
     # 增量加列(幂等,对齐原版 sqlite-schema.ts 老库迁移做法)
     for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
                 "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL",
+    "ALTER TABLE episodes ADD COLUMN duration REAL",
                 "ALTER TABLE ai_service_configs ADD COLUMN settings TEXT",
                 "ALTER TABLE dramas ADD COLUMN creative_description TEXT",
                 "ALTER TABLE dramas ADD COLUMN skip_creative INTEGER DEFAULT 0",
@@ -464,9 +465,18 @@ def set_setting(key: str, value: str) -> None:
        (key, value, now()))
 
 
-def style_prompt(style_value: str) -> str:
+def style_prompt(style_value: str, ethnicity: str = "", content_lang: str = "") -> str:
+    """风格预设提示词 + 人物面孔文化片段(对齐原版 style-preset.ts 的 appendEthnicityFragment)。
+
+    ethnicity 为空时按内容语言推断;角色级覆盖在 prompts_gen 里优先于本函数。
+    """
     row = q1("SELECT prompt FROM style_presets WHERE value=? AND is_active=1", (style_value,))
-    return row["prompt"] if row else ""
+    base = row["prompt"] if row else ""
+    if not ethnicity:
+        from ..pipeline.ethnicity import LANG_TO_ETHNICITY, DEFAULT_ETHNICITY, append_ethnicity_fragment
+        ethnicity = LANG_TO_ETHNICITY.get((content_lang or "").lower(), DEFAULT_ETHNICITY)
+    from ..pipeline.ethnicity import append_ethnicity_fragment
+    return append_ethnicity_fragment(base, ethnicity)
 
 
 def drama_style(drama_id: int) -> str:

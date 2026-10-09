@@ -17,6 +17,12 @@ class AIError(RuntimeError):
     pass
 
 
+def _needs_json_word(err_text: str) -> bool:
+    """网关以「messages 必须含 json 字样」为由拒绝 response_format=json_object 时判 True。"""
+    t = (err_text or "").lower()
+    return "response_format" in t and "json" in t and ("must contain" in t or "invalid_parameter" in t)
+
+
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          temperature: float = 0.7, max_tokens: int = 8192,
          json_mode: bool = False, timeout: int = 300,
@@ -51,7 +57,14 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
             pass
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        # 网关要求 messages 里出现 json 字样才肯用 json_object;被拒就摘掉该参数重发
+        # (runner.run_agent_json 已保证用户消息含该词,这里是兜底)。
+        resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        if resp.status_code != 200 and _needs_json_word(resp.text):
+            body.pop("response_format", None)
+            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+    else:
+        resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     if resp.status_code != 200:
         raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {resp.text[:400]}")
     data = resp.json()

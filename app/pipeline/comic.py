@@ -31,12 +31,27 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
     return len(panels)
 
 
+def _style_for(drama_id: int, style_value: str = "") -> str:
+    """项目风格串 + 人物面孔文化片段(角色级覆盖由 prompts_gen 处理)。"""
+    d = db.q1("SELECT style, ethnicity, language FROM dramas WHERE id=?", (drama_id,))
+    value = style_value or (d["style"] if d else "3d")
+    return db.style_prompt(value or "3d",
+                           ethnicity=(d["ethnicity"] if d else "") or "",
+                           content_lang=(d["language"] if d else "") or "")
+
+
+def panel_people_count(panel_id: int) -> int:
+    """该格绑定的人物数(对齐原版 routes/comic.ts 的 peopleCount)。"""
+    n = db.q1("SELECT COUNT(*) c FROM comic_panel_characters WHERE panel_id=?", (panel_id,))["c"]
+    return max(1, int(n or 0))
+
+
 def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None) -> str:
-    """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀。"""
+    """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀 + 人数硬前缀。"""
     p = db.q1("SELECT * FROM comic_panels WHERE id=?", (panel_id,))
     if not p:
         raise RuntimeError("漫画格不存在")
-    style = db.style_prompt(db.drama_style(drama_id))
+    style = _style_for(drama_id)
     prompt = f"""目标类型:comic_panel(条漫单格画面,画幅竖版)
 视觉风格前缀: {style}
 
@@ -45,6 +60,10 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
     data = runner.run_agent_json("prompt_generator", prompt, config_id=config_id)
     fp = (data or {}).get("final_prompt", "")
+    # 人数硬前缀放在最前:模型先读到「恰好 N 人」,比只在末尾写约束更稳
+    if fp:
+        from ..ai.prompt_guards import comic_people_prefix
+        fp = comic_people_prefix(panel_people_count(panel_id)) + "\n" + fp
     if fp:
         db.ex("UPDATE comic_panels SET image_prompt=?, updated_at=? WHERE id=?", (fp, db.now(), panel_id))
     return fp
@@ -58,7 +77,7 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     if not row:
         raise RuntimeError("资产不存在")
     d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
-    style = db.style_prompt(d["comic_style"] or d["style"] or "3d")
+    style = _style_for(drama_id, style_value=d["comic_style"] or d["style"] or "3d")
     if kind == "character":
         spec = f"角色三视图参考图(左正脸特写+正/侧/背三张全身), 角色: {row['name']}, 样貌: {row['appearance'] or ''}, 服装: {row['styling'] or ''}"
     elif kind == "scene":

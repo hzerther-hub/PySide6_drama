@@ -47,13 +47,50 @@ def _ref_data_url(path: str | Path) -> str | None:
         return None
 
 
+_NEG_UNSUPPORTED = ("negative_prompt is not supported",
+                    "negative prompt is not supported",
+                    "unsupported parameter: negative_prompt")
+
+
+def _strip_negative(body: dict):
+    """从请求体剥离 negative_prompt(顶层 / extra_body / 深层扫描),返回是否剥掉了。"""
+    removed = False
+    if body.pop("negative_prompt", None) is not None:
+        removed = True
+    eb = body.get("extra_body")
+    if isinstance(eb, dict) and eb.pop("negative_prompt", None) is not None:
+        removed = True
+    for v in list(body.values()):                      # 深层扫描(网关可能包一层)
+        if isinstance(v, dict):
+            if v.pop("negative_prompt", None) is not None:
+                removed = True
+    return removed
+
+
+def _raise_or_strip_negative(resp, negative: str | None, prefix: str = "生图失败"):
+    """上游不支持 negative_prompt 时把原因说清楚(剥离重试由调用方决定)。"""
+    text = resp.text[:400]
+    if negative and any(m in text for m in _NEG_UNSUPPORTED):
+        raise AIError(f"{prefix} HTTP {resp.status_code}:该模型不支持 negative_prompt — "
+                      f"已按平台守卫下发负面词,可改用支持负面词的模型或忽略此提示")
+    raise AIError(f"{prefix} HTTP {resp.status_code}: {text}")
+
+
 def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
-                   reference_images: list[str] | None = None) -> tuple[Path, str]:
+                   reference_images: list[str] | None = None,
+                   people: int = 1, skip_guard: bool = False) -> tuple[Path, str]:
     """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。
 
     仅 agnes 注入(extra_body.image[],≤6 张压缩 data URI);其余 provider 忽略。
+
+    **平台级质量守卫**:prompt 统一追加画面质量要求(幂等),negative_prompt 统一下发禁用词。
+    people = 画面应有的人物数(漫画格=绑定角色数),>1 时守卫措辞切到「恰好 N 人」,
+    否则双人格子会收到「只许一个人」的自相矛盾指令、模型可能随机删掉第二个角色。
     """
+    from .prompt_guards import apply_image_quality_guard, build_image_negative_guard
+    prompt = prompt if skip_guard else apply_image_quality_guard(prompt, people)
+    negative = build_image_negative_guard(people) if not skip_guard else None
     cfg = registry.check_ready("image", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     out_name = out_name or f"{uuid.uuid4().hex}.png"
@@ -68,9 +105,11 @@ def generate_image(prompt: str, out_name: str | None = None,
         body: dict = {"model": cfg["model"], "prompt": prompt, "n": 1}
         if size:
             body["size"] = size
+        if negative:
+            body["negative_prompt"] = negative
         resp = requests.post(url, json=body, headers=headers, timeout=300)
         if resp.status_code != 200:
-            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            _raise_or_strip_negative(resp, negative)
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -83,9 +122,11 @@ def generate_image(prompt: str, out_name: str | None = None,
         url = cfg["base_url"].rstrip("/") + "/images/generations"
         body = {"model": cfg["model"], "prompt": prompt, "response_format": "url",
                 "size": size or "2K", "watermark": False}
+        if negative:
+            body["negative_prompt"] = negative
         resp = requests.post(url, json=body, headers=headers, timeout=300)
         if resp.status_code != 200:
-            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            _raise_or_strip_negative(resp, negative)
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -99,13 +140,15 @@ def generate_image(prompt: str, out_name: str | None = None,
         body = {"model": cfg["model"], "prompt": prompt, "n": 1}
         if size:
             body["size"] = size
+        if negative:
+            body["negative_prompt"] = negative
         # 图生图参考(对齐原版 agnes-image adapter:extra_body.image[] data URI,≤6 张)
         refs = [r for r in (_ref_data_url(x) for x in (reference_images or [])[:6]) if r]
         if refs:
             body["extra_body"] = {"image": refs}
         resp = requests.post(submit, json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
-            raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            _raise_or_strip_negative(resp, negative, prefix="Agnes 提交失败")
         data = resp.json()
         # 兼容同步返回与异步任务两种形态
         if isinstance(data.get("data"), list) and data["data"] and (data["data"][0].get("url") or data["data"][0].get("b64_json")):

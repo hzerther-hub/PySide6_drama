@@ -591,3 +591,62 @@ question 三原语:`noul`(布尔/置信度)、`choice`(分类+概率分布)、`s
 ### 验证
 - 审校降噪四条路径 + 台账门控 + 熔断 + `JEV_TRIAGE=0` 全部用桩客户端逐一验证通过。
 - 亮 / 暗两套主题 × 2 项目 × 6 步骤 × 片头编辑器全绿;顺带修掉了 `@keyframes` 引发的整表 QSS 解析失败。
+
+## 2026-10-09(第 29 轮:功能对齐 —— 补齐审计出的前两大缺口)
+> 用户:「即 pydrama 里的功能跟 xiaoshuo 一样。同时界面了也要百分之百的复现」。
+> 先做**后端功能差分审计**(参考 21 个路由文件 / 20 个 service / 17 个 adapter vs 本仓
+> 18 个 pipeline / 8 个 ai 客户端),按价值排序补最前面的两项。
+### 1. 平台级提示词质量守卫(新增 `app/ai/prompt_guards.ts` 的 Python 对应 `app/ai/prompt_guards.py`)
+审计结论里**价值最高的缺口**——参考项目在生成服务层统一注入,不依赖 Agent 是否记得写,
+覆盖全部入口(分镜帧/资产图/漫画格/小说插画、单集与批量视频),**对已存库的旧提示词同样生效**。
+- **图片守卫**:手部五指 / 肢体完整性 / 表情克制 / 画面纯净(无字幕水印品牌真人脸)+ 人物构图;
+- **视频守卫**:肢体完整性 + 表演克制(压尖叫嘶吼痛哭)+ 节奏(禁慢动作与长时间定格);
+- **中英双语**:中文约束 + **英文负面 token**(Seedream/Gemini/Agnes 对英文负面词权重更高);
+- **marker 幂等**:已含同类守卫则跳过 → 重试复用存储提示词不会重复追加;
+- **空提示词不追加**:纯参考素材驱动的生成不凭空引入文本;
+- **按人数自适应**:`people=1` 强调「恰好一人」,`people>1` 改为「恰好 N 人、不得增删」——
+  否则双人格子会收到「只许一个人」的自相矛盾指令,模型可能随机删掉第二个角色;
+  负面词在 `people>1` 时同步去掉 second person / multiple people,否则会把剧情需要的第二个角色禁掉;
+- **逃生阀**:分镜 `video_prompt` 里显式写「情绪爆发」可覆盖表演守卫(与原版一致,已在提示词文档化)。
+- 接入点:`image_client.generate_image(..., people=1)` 与 `video_client.generate_video()` 的**入口**,
+  所有 provider 分支统一下发 `negative_prompt`;上游回 `negative_prompt is not supported` 时
+  给出可读原因(剥离顶层/extra_body/深层的重试助手 `_strip_negative` 已就位)。
+- 漫画格按 `comic_panel_characters` 绑定数加**人数硬前缀**(放在提示词最前,比末尾写约束更稳)。
+### 2. 人物面孔文化片段(新增 `app/pipeline/ethnicity.py`)
+`dramas.ethnicity` / `characters.ethnicity_override` 两列此前**建了但全仓无人读**。
+三级解析:**角色覆盖 > 项目设置 > 按内容语言推断**(语言未知回落 east_asian),
+英文片段幂等追加到风格串尾部;`db.style_prompt()` 增加 ethnicity / content_lang 参数,
+comic / prompts_gen / 分镜等调用点已接线。
+### 3. 分镜拆分落全字段 + 资产绑定(对齐 save_storyboards)
+此前只落 6 列,导致 `refs.build_shot_reference_list` 拿不到任何绑定、参考注入是空的。
+- 落库全字段:title/shot_type/angle/movement/location/time/description/result/atmosphere/
+  image_prompt/video_prompt/bgm_prompt/sound_effect/scene_id/setting_tags/duration;
+  `setting_tags` 为空时**从场景继承**(对齐 storyboard-tools.ts:300-310);
+- 同步写 `storyboard_characters`(带 variant_id)与 `storyboard_props`,
+  兼容「角色名数组」与「char_ids/prop_ids」两种返回形态;
+- 按 `shot_number` **幂等 upsert**(重拆不丢已生成的视频/首帧/字幕);
+- 重算 `episodes.duration = ceil(Σ分镜时长/60)`(新增列 + 迁移项)。
+- `gen_video_prompts` 改为**只处理 video_prompt 为空的镜头**(对齐原版 filter by missing),
+  风格前缀改走 `_style_for`(含面孔文化)。
+- 实测:拆分 1 镜 → 落全字段 → 绑定到角色 id → `build_shot_reference_list` 返回 1 张参考图。
+### 4. 顺带修掉的两个既有缺陷
+- **`run_agent_json` 全部 Agent 400**:部分网关要求 messages 里出现 json 字样才肯用
+  `response_format=json_object`,而 `workspace/prompts/*.md` 里的系统提示不一定含该词
+  (实测 `storyboard_breaker` 的 md 就没有)。现在 `runner.run_agent_json` 一律把
+  「请只输出 JSON」写进用户消息,`text_client` 保留兜底重试。
+- **拆分返回形态兼容**:`{"storyboards":[…]}` / `{"boards":[…]}` / 裸数组 / `{"1":{…}}` 四种都收;
+  模型实际返回的 `shot_size` 字段兼容到 `shot_type`。
+
+### 验证
+守卫幂等/空提示词/人数自适应/负面词随人数切换逐条断言通过;亮暗 × 2 项目 × 6 步骤全绿;测试数据已清。
+
+### 审计出的其余缺口(未做,按价值排序)
+1. **建项目自动生成首集**(auto-generate.ts):建项目时按 work_type 后台跑对应 Agent;
+2. **视频请求契约校验**(routes/tasks.ts):Wan 3.0 的 `input.media[]/parameters{}` 形态与张数上限;
+3. **跨 provider 回退链 + `retry_at` 时间戳跟随 + 轮询分档**(POLL_PROFILES);
+4. **final-prompt 缓存 + 风格指纹失效 + buildVaryPrompt**(图生图编辑提示词构造);
+5. **局部重绘 inpaint**(utils/inpaint.ts,340 行金字塔填充 + 擦除/还原 UI);
+6. **存储用量卡**(routes/storage.ts,分桶统计 + 60s 缓存)、**视频海报帧**(t=0.5s/宽 640)、
+   **上传体积与 MIME 白名单**、**上传缩略图**;
+7. **变体表缺 tags / sort_order 列**(导致无法做子集最大命中与 tie-break);
+8. **GLM 整段视频直传的 16384 token 余量与 40MB/120s 守卫**。
