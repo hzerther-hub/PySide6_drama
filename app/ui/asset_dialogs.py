@@ -15,9 +15,12 @@ from . import widgets as W
 from .braille import WaitingButton
 from .toast import err, ok
 
-ASPECTS = [("16:9", "16:9 · 横屏"), ("9:16", "9:16 · 竖屏"), ("1:1", "1:1 · 方形"), ("adaptive", "自适应")]
-ETHNICITIES = [("auto", "智能匹配"), ("east_asian", "东亚"), ("middle_eastern", "中东"),
-               ("western", "西方"), ("south_asian", "南亚"), ("latin", "拉美"), ("african", "非洲"), ("mixed", "混合")]
+ASPECTS = [("16:9", "u_ratio_16_9"), ("9:16", "u_ratio_9_16"),
+            ("1:1", "u_ratio_1_1"), ("adaptive", "u_ratio_adaptive")]
+ETHNICITIES = [("auto", "auto"), ("east_asian", "u_eth_east_asian"),
+               ("middle_eastern", "u_eth_middle_eastern"), ("western", "u_eth_western"),
+               ("south_asian", "u_eth_south_asian"), ("latin", "u_eth_latin"),
+               ("african", "u_eth_african"), ("mixed", "u_eth_mixed")]
 
 
 def _muted(t: str) -> QLabel:
@@ -40,11 +43,11 @@ class ProjectSettingsDialog(QDialog):
         f.addRow(tr("project_name"), self.title)
         meta = db.jload(d["metadata"], {})
         self.intro = QLineEdit(meta.get("intro", ""))
-        self.intro.setPlaceholderText("一句话简介(可选)")
-        f.addRow("简介", self.intro)
+        self.intro.setPlaceholderText(tr("u_whole_placeholder"))
+        f.addRow(tr("u_intro"), self.intro)
         self.genre = QLineEdit(meta.get("genre", ""))
-        self.genre.setPlaceholderText("题材,如 都市情感 / 仙侠")
-        f.addRow("题材", self.genre)
+        self.genre.setPlaceholderText(tr("u_genre"))
+        f.addRow(tr("u_genre"), self.genre)
         # AI 起草简介/题材:素材优先级 = 首章正文 > 创意描述 > 项目名
         meta_row = QWidget()
         mr = QHBoxLayout(meta_row)
@@ -87,7 +90,7 @@ class ProjectSettingsDialog(QDialog):
         f.addRow("", _muted("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述"))
         self.aspect = QComboBox()
         for v, label in ASPECTS:
-            self.aspect.addItem(label, v)
+            self.aspect.addItem(label if label == "auto" else tr(label), v)
         i = self.aspect.findData(d["aspect_ratio"])
         self.aspect.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("aspect_ratio"), self.aspect)
@@ -108,7 +111,7 @@ class ProjectSettingsDialog(QDialog):
         f.addRow("", W.muted("本项目的剧本/资产/分镜等 AI 产出固定使用该语言,不影响其他项目"))
         self.ethnicity = QComboBox()
         for v, label in ETHNICITIES:
-            self.ethnicity.addItem(label, v)
+            self.ethnicity.addItem(label if label == "auto" else tr(label), v)
         i = self.ethnicity.findData(d["ethnicity"])
         self.ethnicity.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("ethnicity"), self.ethnicity)
@@ -123,7 +126,7 @@ class ProjectSettingsDialog(QDialog):
         self.creative.setPlaceholderText("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣���、拿回母亲遗产……")
         self.creative.setMaximumHeight(96)
         self.creative.setDisabled(has_first_ep or bool(d["skip_creative"]))
-        f.addRow("创意描述", self.creative)
+        f.addRow(tr("u_creative_desc"), self.creative)
         f.addRow("", W.muted(
             "已有第 1 集,创意描述已锁定不可修改(如需调整,请新建项目)" if has_first_ep
             else "项目级「故事是什么」的全文描述,AI 用它生成匹配的章节内容(小说/短剧/漫画 都用)"))

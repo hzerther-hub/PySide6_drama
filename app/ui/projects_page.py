@@ -18,11 +18,13 @@ WT_LABEL = {"novel": tr("wt_novel"), "drama": tr("wt_drama"),
             "comic": tr("wt_comic"), "promotion": tr("wt_promotion"),
             "video_clone": tr("wt_clone")}
 
-STATUS_META = {
-    "pending": ("待开始", "#86909c"),
-    "active": ("进行中", "#16a34a"),
-    "completed": ("已完成", "#f97316"),
-}
+# 状态色固定;标签走 i18n 词典(不能在导入时求值,否则切语言不生效)
+STATUS_META = {"pending": "#86909c", "active": "#16a34a", "completed": "#f97316"}
+STATUS_KEY = {"pending": "u_pending", "active": "u_running", "completed": "u_done"}
+
+
+def status_label(status: str) -> str:
+    return tr(STATUS_KEY.get(status, "u_pending"))
 FILTERS = [("all", "全部"), ("draft", "待开始"), ("active", "进行中"), ("completed", "已完成")]
 FILTER_DB = {"all": None, "draft": "pending", "active": "active", "completed": "completed"}
 
@@ -185,7 +187,7 @@ class ProjectCard(QFrame):
         lay.addWidget(body, 1)
 
     def _apply_status_style(self, status: str):
-        label, color = STATUS_META.get(status, STATUS_META["pending"])
+        label, color = status_label(status), STATUS_META.get(status, STATUS_META["pending"])
         self.status_btn.setText(f"●  {label}")
         self.status_btn.setStyleSheet(
             f"QPushButton{{color:{color}; background:#ffffff; border:1px solid {color}44;"
@@ -193,9 +195,9 @@ class ProjectCard(QFrame):
 
     def _status_menu(self):
         m = QMenu(self)
-        for key, (label, color) in STATUS_META.items():
-            act = m.addAction(f"●  {label}")
-            act.setIcon(_dot_icon(color))
+        for key in STATUS_META:
+            act = m.addAction(f"●  {status_label(key)}")
+            act.setIcon(_dot_icon(STATUS_META[key]))
             act.triggered.connect(lambda _=False, k=key: self.status_changed.emit(self.drama_id, k))
         m.exec()
 
@@ -367,7 +369,7 @@ class ProjectsPage(QWidget):
 
     def _set_status(self, drama_id: int, status: str):
         db.ex("UPDATE dramas SET status=?, updated_at=? WHERE id=?", (status, db.now(), drama_id))
-        ok(f"已标记为「{STATUS_META[status][0]}」")
+        ok(f"{tr('status_marked')}: {status_label(status)}")
         self.reload()
 
     def _delete(self, drama_id: int, _title: str):

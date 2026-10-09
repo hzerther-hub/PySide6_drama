@@ -18,9 +18,11 @@ WORK_TYPES = [
     ("promotion", "◈", "wt_promotion", "wt_promotion_desc"),
     ("video_clone", "▷", "wt_clone", "wt_clone_desc"),
 ]
-ASPECTS = [("16:9", "16:9 · 横屏"), ("9:16", "9:16 · 竖屏"), ("1:1", "1:1 · 方形"), ("adaptive", "自适应")]
-ETHNICITIES = [("auto", "ethnicity_auto"), ("east_asian", "东亚"), ("middle_eastern", "中东"),
-               ("western", "西方"), ("south_asian", "南亚"), ("latin", "拉美"), ("african", "非洲"), ("mixed", "混合")]
+ASPECTS = [("16:9", "u_ratio_16_9"), ("9:16", "u_ratio_9_16"), ("1:1", "u_ratio_1_1"),
+                        ("adaptive", "u_ratio_adaptive")]
+ETHNICITIES = [("auto", "ethnicity_auto"), ("east_asian", "u_eth_east_asian"), ("middle_eastern", "u_eth_middle_eastern"),
+                       ("western", "u_eth_western"), ("south_asian", "u_eth_south_asian"),
+                       ("latin", "u_eth_latin"), ("african", "u_eth_african"), ("mixed", "u_eth_mixed")]
 PLATFORMS = [("douyin", "抖音"), ("xiaohongshu", "小红书"), ("wechat_channels", "视频号"),
              ("wechat_mp", "公众号"), ("bilibili", "B站"), ("zhihu", "知乎")]
 FORMATS = [("video", "短视频"), ("image_set", "图文集"), ("card_burst", "卡点"),
@@ -76,10 +78,10 @@ class NewProjectDialog(QDialog):
         self.style_combo = QComboBox()
         self.aspect_combo = QComboBox()
         for v, label in ASPECTS:
-            self.aspect_combo.addItem(label, v)
+            self.aspect_combo.addItem(tr(label), v)
         self.eth_combo = QComboBox()
         for v, label in ETHNICITIES:
-            self.eth_combo.addItem(tr(label) if label.startswith("ethnicity") else label, v)
+            self.eth_combo.addItem(tr(label), v)
         more = QFormLayout()
         more.addRow(tr("visual_style"), self.style_combo)
         more.addRow(tr("aspect_ratio"), self.aspect_combo)

@@ -36,11 +36,13 @@ def ep_stage_index(ep: dict) -> int:
     return 4
 
 
-STATUS_META = {
-    "pending": ("待开始", "#86909c"),
-    "active": ("进行中", "#f97316"),
-    "completed": ("已完成", "#16a34a"),
-}
+# 状态色固定;标签走 i18n 词典(不能在导入时求值,否则切语言不生效)
+STATUS_META = {"pending": "#86909c", "active": "#16a34a", "completed": "#f97316"}
+STATUS_KEY = {"pending": "u_pending", "active": "u_running", "completed": "u_done"}
+
+
+def status_label(status: str) -> str:
+    return tr(STATUS_KEY.get(status, "u_pending"))
 
 
 def _chapter_name_missing(ep: dict) -> bool:
@@ -240,7 +242,7 @@ class EpisodeCard(QFrame):
         self.title_edit.clearFocus()
 
     def _apply_status(self, status: str):
-        label, color = STATUS_META.get(status, STATUS_META["pending"])
+        label, color = status_label(status), STATUS_META.get(status, STATUS_META["pending"])
         self.status_btn.setText(f"●  {label}")
         self.status_btn.setStyleSheet(
             f"QPushButton{{color:{color};background:#f7f8fa;border:none;"
@@ -249,8 +251,8 @@ class EpisodeCard(QFrame):
     def _status_menu(self):
         m = QMenu(self)
         cur = db.q1("SELECT status FROM episodes WHERE id=?", (self.episode_id,))
-        for key, (label, _c) in STATUS_META.items():
-            act = m.addAction(("● " if cur and cur["status"] == key else "○ ") + label)
+        for key in STATUS_META:
+            act = m.addAction(("● " if cur and cur["status"] == key else "○ ") + status_label(key))
             act.triggered.connect(lambda _=False, k=key: self._set_status(k))
         m.exec()
 
@@ -258,7 +260,7 @@ class EpisodeCard(QFrame):
         db.ex("UPDATE episodes SET status=?, updated_at=? WHERE id=?",
               (status, db.now(), self.episode_id))
         self._apply_status(status)
-        ok(f"已标记为「{STATUS_META[status][0]}」")
+        ok(f"{tr('status_marked')}: {status_label(status)}")
 
     def _res_menu(self):
         m = QMenu(self)

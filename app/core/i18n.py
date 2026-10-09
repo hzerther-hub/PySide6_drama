@@ -478,6 +478,10 @@ def current_language() -> str:
 
 
 def tr(key: str, *args) -> str:
+    """取界面文案:当前语言主词典 → 英文主词典 → 英文补充词典 → 中文补充词典 → zh 主词典 → key。"""
+    from .ui_strings import ui_lookup
     table = T.get(_current, T["en"])
-    val = table.get(key) or T["en"].get(key) or Z.get(key) or key
+    val = (table.get(key) or T["en"].get(key)
+           or ui_lookup(_current, key) or ui_lookup("en", key)
+           or Z.get(key) or key)
     return val.format(*args) if args else val
