@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import json
+import time
+from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, 
 
 from ..ai import face_swap, image_client, registry, tts_client, video_client
 from ..agents import runner
+from ..ai.jev_gate import JevBreaker
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
@@ -48,10 +51,103 @@ PROGRESS_STEPS = [("raw", "stage_script"), ("assets", "stage_assets"),
 REF_TAB_KEYS = {"character": "chars", "scene": "scenes", "prop": "props"}
 
 
+class _MergeTick(QTimer):
+    """拼接等待态 1s 心跳:刷新「拼接中」卡片上的已耗时秒数(对齐原版 nowTick + mergeElapsedSec)。"""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.setInterval(650)
+        self.timeout.connect(page._tick_merge_waiting)
+        self._pulse_on = False
+
+
+_costume_breaker = JevBreaker("video-costume")
+
+
+def _sb_costume_context(sb_id: int, drama_id: int) -> str:
+    """本镜角色剧情着装状态 —— 判断服装是否应已随剧情变化(对齐原版 buildShotStateCostumeContext)。
+
+    两层:
+      1. 确定性:状态台账里该角色的「外貌」有记录 → 直接注入「剧情当前着装」
+         (台账由批量写作每章提取,是剧情推进后的权威状态)
+      2. Jev 判读:台账无外貌记录的角色,把本镜画面描述 + 角色基础形象发给 Jev
+         (noul:本镜着装是否应已不同于基础形象 —— 中举/婚礼/上任/败落/季节更替等换装事件),
+         置信度 ≥ JEV_COSTUME_MIN_CONFIDENCE(默认 0.6) 才注入,防误报污染提示词
+
+    软失败:JEV_COSTUME_CHECK=0 关判读;未配置 / 连不通(独立熔断)只保留台账确定性注入。
+    与造型变体机制互补(变体=人工预设,本功能=剧情状态)。
+    """
+    import os as _os
+
+    from ..pipeline import state_ledger as _sl
+    links = db.q("SELECT character_id FROM storyboard_characters WHERE storyboard_id=?", (sb_id,))
+    if not links:
+        return ""
+    ids = tuple(l["character_id"] for l in links)
+    chars = {r["id"]: dict(r) for r in db.q(
+        "SELECT * FROM characters WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids)}
+    ledger = _sl._meta(drama_id).get("state_ledger") or {}
+    sb = db.q1("SELECT content FROM storyboards WHERE id=?", (sb_id,))
+    lines: list[str] = []
+    need_jev: list[tuple[str, str]] = []
+    for link in links:
+        ch = chars.get(link["character_id"])
+        if not ch:
+            continue
+        look = ((ledger.get("characters") or {}).get(ch.get("name") or "") or {}).get("外貌")
+        if look:
+            lines.append(f"{ch['name']} → 剧情当前着装(状态台账):{str(look)[:80]}")
+        else:
+            need_jev.append((ch.get("name") or "", (ch.get("appearance") or "")[:80]))
+
+    if need_jev and _os.environ.get("JEV_COSTUME_CHECK") != "0":
+        from ..ai.jev_gate import get_jev_gate
+        gate = get_jev_gate()
+        if gate.usable and not _costume_breaker.in_cooldown():
+            questions = {
+                f"chg_{i}": {
+                    "type": "noul",
+                    "instructions": ("按剧情进展与本镜画面,该角色的服装是否应已与其基础形象不同"
+                                     "(中举/婚礼/上任/败落/季节更替等换装事件)。"
+                                     "1=应已变化,0=应仍是基础形象"),
+                } for i in range(len(need_jev))
+            }
+            state = ("【角色基础形象】" + "；".join(f"{n}:{a or '未描述'}" for n, a in need_jev)
+                     + "\n【本镜画面描述】\n" + str((sb["content"] if sb else "") or "")[:800])
+            result = gate.client.decide(state, questions)
+            if result and result.get("answers"):
+                _costume_breaker.note_ok()
+                try:
+                    th = float(_os.environ.get("JEV_COSTUME_MIN_CONFIDENCE") or 0.6)
+                except ValueError:
+                    th = 0.6
+                for i, (name, _ap) in enumerate(need_jev):
+                    try:
+                        n = float((result["answers"].get(f"chg_{i}") or {}).get("noul"))
+                    except (TypeError, ValueError):
+                        continue
+                    if n >= th:
+                        lines.append(
+                            f"{name} → 剧情推进,本镜着装应已不同于基础形象"
+                            f"(置信度 {int(round(n * 100))}%):按剧本语境描写当前服装,不要直接套用参考图妆造")
+            else:
+                _costume_breaker.note_fail()
+    if not lines:
+        return ""
+    return ("\n本镜角色剧情着装状态(着装描写必须与此一致;无着装提示的角色按基础形象):\n"
+            + "\n".join(lines))
+
+
 def _sb_prompt_request(r: dict) -> str:
     """「视频提示词」AI 重生成请求(对齐原版 inspector 的 AI 生成按钮)。"""
+    costume = ""
+    if r.get("id") and r.get("drama_id"):
+        try:
+            costume = _sb_costume_context(r["id"], r["drama_id"])
+        except Exception:  # noqa: BLE001 —— 着装判读异常不阻断提示词生成
+            costume = ""
     return f"""为下面这个镜头生成视频提示词(英文,一段,不要解释)。
-
+{costume}
 画面描述:
 {r.get('content') or '(无)'}
 
@@ -63,7 +159,6 @@ def _sb_prompt_request(r: dict) -> str:
 
 已绑定的 @角色名 / @场景名 会自动映射为参考图,请原样保留这些 @ 标记。
 只输出提示词正文。"""
-
 
 # 资产卡文案(对齐原版 zh.json 的 episode.asset.* / episode.prod.*)
 ASSET_LABELS = {
@@ -1137,9 +1232,10 @@ class EpisodePage(QWidget):
         rewrite_again = QPushButton("↻ " + tr("rewrite"))
         rewrite_again.clicked.connect(self._rewrite)
         row.addWidget(rewrite_again)
-        save_script = W.primary_btn("💾 " + tr("save"))
-        save_script.clicked.connect(self._save_script)
-        row.addWidget(save_script)
+        # 保存:dirty 门控(无改动置灰)+ 落库 + toast —— 该编辑框此前无保存机制,手改会静默丢失
+        self.script_save_btn = W.primary_btn("💾 " + tr("save"))
+        self.script_save_btn.clicked.connect(self._save_script)
+        row.addWidget(self.script_save_btn)
         bl.addLayout(row)
         lay.addWidget(bar)
 
@@ -1159,6 +1255,7 @@ class EpisodePage(QWidget):
         self.script_edit.setPlaceholderText(tr("script_ph"))
         self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         install_ai_edit_shortcut(self.script_edit, self._open_ai_edit)
+        self.script_edit.textChanged.connect(self._update_script_dirty)
         lay.addWidget(self.script_edit, 1)
         ai_row = QHBoxLayout()
         ai_row.setContentsMargins(12, 4, 12, 0)
@@ -1182,10 +1279,22 @@ class EpisodePage(QWidget):
             self.style_combo.setCurrentIndex(max(0, self.style_combo.findData(data)))
             self.style_combo.blockSignals(False)
 
+    def _update_script_dirty(self):
+        """保存按钮的 dirty 门控:与库内内容一致时置灰。"""
+        if not hasattr(self, "script_save_btn"):
+            return
+        cur = self.script_edit.toPlainText()
+        same = cur == (self._ep["script_content"] or "")
+        self.script_save_btn.setEnabled(not same)
+        self.script_save_btn.setToolTip(tr("save") if same else tr("save_dirty_hint"))
+
     def _reload_rewrite(self):
         from ..pipeline import novel as novel_pipe
         text = self._ep["script_content"] or ""
+        self.script_edit.blockSignals(True)
         self.script_edit.setPlainText(text)
+        self.script_edit.blockSignals(False)
+        self._update_script_dirty()
         self.script_len_lab.setText(tr("chars_n", len(text)) if text else "")
         has = bool(text)
         self.rewrite_empty.setVisible(not has)
@@ -1228,6 +1337,8 @@ class EpisodePage(QWidget):
         db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?",
               (self.script_edit.toPlainText(), db.now(), self.episode_id))
         self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+        self._update_script_dirty()
+        ok(tr("script_saved"))
 
     # ── 阶段③ 视漫制作(资产) ──
     def _panel_assets(self, lay):
@@ -2306,6 +2417,7 @@ class EpisodePage(QWidget):
         if not row:
             return
         r = dict(row)
+        r["drama_id"] = self.drama_id
         btn = self.sb_ai_prompt_btn
         btn.busy(tr("ai_generate"))
 
@@ -2790,10 +2902,12 @@ class EpisodePage(QWidget):
         self.sel_btn = QPushButton(tr("select_all"))
         self.sel_btn.clicked.connect(self._toggle_select_all)
         head2.addWidget(self.sel_btn)
-        self.merge_btn = W.primary_btn("▦ " + tr("merge_selected", 0))
+        self.merge_btn = WaitingButton("▦ " + tr("merge_selected", 0), primary=True)
         self.merge_btn.clicked.connect(self._merge)
         head2.addWidget(self.merge_btn)
         body.addLayout(head2)
+        # 拼接等待态:1s 心跳刷新「已耗时秒数」(对齐原版 mergeElapsedSec + nowTick)
+        self._merge_tick = _MergeTick(self)
 
         # 片头设置行(导出页唯一的合并设置)。
         # 两个开关分列而非单一「加入片头」:原版 d262ac1 修的就是「叠加开了但卡片被默认值强开」——
@@ -2829,6 +2943,10 @@ class EpisodePage(QWidget):
         self.shot_checks: dict[int, QCheckBox] = {}
         self.shot_cards: dict[int, QWidget] = {}
         self._selected: set[int] = set()
+        self._merge_cards: list[QWidget] = []     # 用于心跳刷新耗时
+        self._pulse_on = False                     # 「拼接中」文字呼吸明暗
+        self._merge_in_flight = False              # 有拼接在进行:按钮防重入
+        self._active_merge: dict | None = None     # 拼好后自动打开的成片
 
     # ── 成片列表 ──
     def _reload_export(self):
@@ -2855,10 +2973,13 @@ class EpisodePage(QWidget):
             w = it.widget()
             if w:
                 w.deleteLater()
+        self._merge_cards = []
         self.merge_empty.setVisible(not rows)
         self.merge_scroll.setVisible(bool(rows))
         for r in rows:
-            self.merge_strip.addWidget(self._merge_card(r))
+            card = self._merge_card(r)
+            self._merge_cards.append(card)
+            self.merge_strip.addWidget(card)
         self.merge_strip.addStretch(1)
         self._reload_shot_grid()
         self._load_intro_state()
@@ -2888,13 +3009,29 @@ class EpisodePage(QWidget):
             play.setAlignment(Qt.AlignCenter)
             play.setStyleSheet("color:white; font-size:22px; background:transparent; border:none;")
             tl.addWidget(play, 1)
-        else:
-            msg = (m["error_msg"] or tr("merge_failed")) if m["status"] == "failed" else tr("merging")
-            lab = QLabel(msg)
+        elif m["status"] == "failed":
+            lab = QLabel(m["error_msg"] or tr("merge_failed"))
             lab.setAlignment(Qt.AlignCenter)
             lab.setWordWrap(True)
-            lab.setStyleSheet("color:#ff8b8f;" if m["status"] == "failed" else "color:#b8bcc4;")
+            lab.setStyleSheet("color:#dc2626;")
             tl.addWidget(lab, 1)
+        else:
+            # 等待态:文字呼吸闪烁 + 已耗时秒数逐秒跳动,一眼可见还在拼接
+            holder = QWidget()
+            holder.setObjectName("mergePending")
+            hl = QVBoxLayout(holder)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(4)
+            wait = QLabel(tr("merging"))
+            wait.setAlignment(Qt.AlignCenter)
+            wait.setObjectName("mergingWait")
+            hl.addWidget(wait)
+            elapsed = QLabel("0s")
+            elapsed.setAlignment(Qt.AlignCenter)
+            elapsed.setObjectName("monoTag")
+            elapsed.setProperty("mergeElapsed", m["id"])
+            hl.addWidget(elapsed)
+            tl.addWidget(holder, 1)
         lay.addWidget(thumb)
         meta = QHBoxLayout()
         meta.addWidget(C.mono_tag((m["created_at"] or "")[:16].replace("T", " ")))
@@ -3056,8 +3193,40 @@ class EpisodePage(QWidget):
               (self.intro_title.text().strip(), 1 if self.intro_check.isChecked() else 0,
                db.now(), self.drama_id))
 
+    def _merge_elapsed_sec(self, m: dict) -> str:
+        """从成片记录的创建时间算已耗时秒数(心跳里逐秒跳动)。"""
+        try:
+            t0 = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:  # noqa: BLE001
+            return "0s"
+        return f"{max(0, int((time.time() - t0.timestamp())))}s"
+
+    def _tick_merge_waiting(self):
+        """心跳:1s 刷耗时秒数 + 0.65s 交替「拼接中」文字的呼吸明暗。"""
+        self._tick_merge_elapsed()
+        self._pulse_on = not self._pulse_on
+        for card in getattr(self, "_merge_cards", []):
+            for lab in card.findChildren(QLabel):
+                if lab.objectName() == "mergingWait":
+                    lab.setProperty("pulse", "1" if self._pulse_on else "0")
+                    lab.style().unpolish(lab)
+                    lab.style().polish(lab)
+
+    def _tick_merge_elapsed(self):
+        """心跳:只改文本,不重建列表(保住滚动位置)。"""
+        rows = {r["id"]: dict(r) for r in db.q(
+            "SELECT * FROM video_merges WHERE episode_id=?", (self.episode_id,))}
+        for card in getattr(self, "_merge_cards", []):
+            for lab in card.findChildren(QLabel):
+                mid = lab.property("mergeElapsed")
+                if mid is not None and mid in rows:
+                    lab.setText(self._merge_elapsed_sec(rows[mid]))
+
     def _merge(self):
         ids = [i for i in self._selected if self.shot_checks.get(i) and self.shot_checks[i].isEnabled()]
+        if self._merge_in_flight:
+            info(tr("merging"))
+            return
         if len(ids) < 2:
             QMessageBox.information(self, tr("export_stage"), tr("merge_needs_two"))
             return
@@ -3066,6 +3235,10 @@ class EpisodePage(QWidget):
         intro_card = self.intro_check.isChecked()
         intro_overlay = self.intro_overlay_check.isChecked()
 
+        self._merge_in_flight = True
+        self.merge_btn.setEnabled(False)
+        self.merge_btn.setText("⠋ " + tr("merging"))
+
         def job(tid):
             return merge_pipe.merge_episode(
                 self.episode_id, ids,
@@ -3073,12 +3246,21 @@ class EpisodePage(QWidget):
                 intro_card=intro_card, intro_overlay=intro_overlay)
 
         def done(tid, result, error):
+            self._merge_in_flight = False
+            if self.merge_btn:
+                self.merge_btn.idle()
+                self.merge_btn.setText("▦ " + tr("merge_selected", len(self._selected)))
             if error:
                 err(tr("export_stage"))
             else:
-                import os
-                os.startfile(str(result))  # noqa
+                ok(tr("merge_done"))
+            # 先把结果刷进成片列表(「拼接中」→ 完成卡),再重选按钮态
             self._reload_export()
+            # 拼好后自动打开成片预览 —— 结果立刻可见,不用再点一次
+            row = db.q1("SELECT * FROM video_merges WHERE episode_id=? ORDER BY id DESC LIMIT 1",
+                        (self.episode_id,))
+            if result and row and row["status"] == "completed" and row["merged_url"]:
+                self._play_merge(dict(row))
 
         TASKMGR.submit("merge", job, done, episode_id=self.episode_id)
 

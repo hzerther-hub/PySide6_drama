@@ -101,6 +101,10 @@ QLabel#narrationHead { font-size: 11px; color: #86909c; letter-spacing: 1px; }
 QLabel#narrationHint { font-size: 10px; color: #a8b0bb; }
 QLabel#comicError { font-size: 11px; color: #dc2626; }
 QFrame#stitchBox { background: #f7f8fa; border: 1px solid #e4e7ec; border-radius: 10px; }
+QWidget#mergePending { background: transparent; border: none; }
+QLabel#mergingWait { color: #86909c; background: transparent; border: none; opacity: 1; }
+QLabel#mergingWait[pulse="1"] { opacity: 0.35; }
+QLabel#monoTag[mergeElapsed] { color: #e0794b; }
 QLabel#refThumb { font-size:22px; background:#f2f3f5; color:#c0c6cf; border-radius:6px; }
 QFrame#comicThumbBox { background:#f2f3f5; border:none; border-top-left-radius:10px;
   border-top-right-radius:10px; }
@@ -193,6 +197,10 @@ QLabel#narrationHead { font-size: 11px; color: #8b909a; letter-spacing: 1px; }
 QLabel#narrationHint { font-size: 10px; color: #6b7280; }
 QLabel#comicError { font-size: 11px; color: #ff8b8f; }
 QFrame#stitchBox { background: #1a1c20; border: 1px solid #2c2e35; border-radius: 10px; }
+QWidget#mergePending { background: transparent; border: none; }
+QLabel#mergingWait { color: #8b909a; background: transparent; border: none; opacity: 1; }
+QLabel#mergingWait[pulse="1"] { opacity: 0.35; }
+QLabel#monoTag[mergeElapsed] { color: #fbbf24; }
 QLabel#refThumb { font-size:22px; background:#1a1c20; color:#5a5d66; border-radius:6px; }
 QFrame#comicThumbBox { background:#1a1c20; border:none; border-top-left-radius:10px;
   border-top-right-radius:10px; }
@@ -274,7 +282,9 @@ QPushButton:disabled { color: #c0c6cf; border-color: #e4e7ec; }
 QPushButton#primary { background: #f97316; border: none; color: white; font-weight: 600; }
 QPushButton#primary:hover { background: #ea580c; }
 QPushButton#primary:disabled { background: #f6c9a3; color: #f0f1f5; }
-QPushButton#danger { color: #dc2626; border-color: #f0b4b4; }
+QPushButton#danger { color: #dc2626; border-color: #f0b4b4;
+  background: rgba(220,38,38,0.10); font-weight: 600; }
+QPushButton#danger:hover { color: #b91c1c; background: rgba(220,38,38,0.16); }
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {
   background: #ffffff; border: 1px solid #d5d9e0; border-radius: 6px; padding: 5px 8px; color: #1f2329; selection-background-color: #f97316;
 }

@@ -113,7 +113,8 @@ class CoverBox(QFrame):
                  on_click=None):
         super().__init__()
         self.setFixedHeight(h)
-        self.setMinimumWidth(w)
+        self.setMinimumWidth(min(w, 180))     # 不再撑破卡宽:小屏按 180,宽屏随布局铺满
+        self._w = w
         self.setStyleSheet(
             "QFrame#coverBox{border:1px solid rgba(128,128,128,0.22); border-radius:8px;}"
             "QLabel#coverInner{border:none;}")
@@ -187,18 +188,23 @@ class CharacterAssetCard(QFrame):
                                badge_state="ready" if row.get("image_url") else "todo",
                                tag_text=labels["cover_tag"],
                                on_click=on_open))
-        name_row = QHBoxLayout()
+        # 名字块独占整行(此前与按钮同排,长名被挤到 ~30px 宽后省略;超长自动折行)
+        name_wrap = QWidget()
+        name_wrap.setStyleSheet("border:none; background:transparent;")
+        name_row = QVBoxLayout(name_wrap)
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(3)
         name = QLabel(row.get("name") or "")
         f = name.font()
         f.setBold(True)
         name.setFont(f)
-        name.setWordWrap(True)
-        name_row.addWidget(name, 1)
+        name.setWordWrap(True)          # 折行而非截断
+        name_row.addWidget(name)
         name_row.addWidget(role_tag(
             row.get("role_type") or "",
             {"lead": labels["lead"], "supporting": labels["supporting"]}.get(
                 row.get("role_type") or "", labels["extra"])))
-        lay.addLayout(name_row)
+        lay.addWidget(name_wrap)
         summary = QHBoxLayout()
         for key, lab in (("appearance", "样貌"), ("styling", "妆造")):
             v = (row.get(key) or "").strip()
@@ -247,7 +253,8 @@ class AssetCard(QFrame):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         has = bool(row.get("image_url"))
-        lay.addWidget(CoverBox(row.get("image_url"), 198, 112,
+        # 封面占满卡宽:此前固定两列(主图+漫画图),单封面只占左半
+        lay.addWidget(CoverBox(row.get("image_url"), 260, 112,
                                "⌖" if kind == "scene" else "▣",
                                badge=labels["cover_done"] if has else labels["cover_todo"],
                                badge_state="ready" if has else "todo",

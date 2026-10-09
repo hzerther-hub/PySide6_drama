@@ -194,7 +194,7 @@ class EpisodeCard(QFrame):
         st.setObjectName("muted")
         foot.addWidget(st)
         foot.addStretch(1)
-        del_btn = W.danger_btn(tr("delete"))
+        del_btn = W.danger_btn("🗑 " + tr("delete"))   # 图标+文字,常显危险色(此前纯图标几乎不可见)
         del_btn.setFixedHeight(28)
         del_btn.setToolTip(tr("delete_episode"))
         del_btn.clicked.connect(self._del)

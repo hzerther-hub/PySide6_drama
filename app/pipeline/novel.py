@@ -741,7 +741,7 @@ def check_prev_chapter(drama_id: int, episode_number: int) -> None:
 
 def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = False,
                          config_id: int | None = None, lang: str | None = None,
-                         on_progress=None) -> dict:
+                         on_progress=None, model: str | None = None) -> dict:
     """批量写章(**强制串行**,顺序按章节号升序,防标题写进A章正文写进B章)。
 
     对齐原版 48f36da:并发度硬编码为 1 —— 第 N 章开写前要读第 N-1 章结尾 +
@@ -775,7 +775,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
         # 失败只记不抛 —— 台账是增强项,绝不阻断批量写作主流程。
         try:
             from . import state_ledger
-            state_ledger.update_state_ledger(drama_id, r["id"], config_id=config_id)
+            state_ledger.update_state_ledger(drama_id, r["id"], config_id=config_id, model=model)
         except Exception:  # noqa: BLE001
             pass
         if on_progress:
@@ -783,13 +783,18 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
     return {"total": len(rows), "ok": ok, "failed": failed}
 
 
-def update_state_ledger(episode_id: int, config_id: int | None = None) -> dict | None:
-    """手动重跑单章台账(修复/补历史用);对应参考项目 POST /novel/update-state-ledger。"""
+def update_state_ledger(episode_id: int, config_id: int | None = None,
+                        model: str | None = None) -> dict | None:
+    """手动重跑单章台账(修复/补历史用);对应参考项目 POST /novel/update-state-ledger。
+
+    config_id / model 可选:跟随指定文本模型提取(缺省回退集锁定 / 全局默认)。
+    """
     ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("章节不存在")
     from . import state_ledger
-    out = state_ledger.update_state_ledger(ep["drama_id"], episode_id, config_id=config_id)
+    out = state_ledger.update_state_ledger(ep["drama_id"], episode_id,
+                                           config_id=config_id, model=model)
     if out is None:
         raise RuntimeError("台账提取失败(正文过短或模型输出异常)")
     return out

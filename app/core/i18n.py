@@ -96,7 +96,7 @@ Z = {  # 中文(基准)
  "shot_stat": "{0}/{1} 已生成 · 已选 {2}",
  "select_all": "全选已生成", "add_intro": "加入片头",
  "intro_card_mode": "片头标题卡", "intro_overlay_mode": "叠加文字", "edit_intro": "编辑片头", "intro_title_ph": "片头名(默认剧名)",
- "merging": "拼接中…", "merge_failed": "拼接失败", "merge_preview_title": "成片预览",
+ "merging": "拼接中…", "merge_done": "拼接完成", "merge_failed": "拼接失败", "merge_preview_title": "成片预览",
  "merge_needs_two": "请至少勾选 2 个已有视频的镜头", "download_ok": "已下载",
  # 任务抽屉
  "gen_task_list": "生成任务列表", "gen_task_meta": "按创建时间倒序 · {0} 个任务",
@@ -127,7 +127,8 @@ Z = {  # 中文(基准)
  "ai_review_tip": "六维审校(连贯性/人设/设定/物件/文风/节奏)·点击查看问题明细",
  "review_summary": "全书审校清单", "review_open_hint": "查看本集审校问题明细", "review_n": "审校 {0} 项",
  "gen_title_tip": "正文已有标题行就直接取,否则 AI 参考前文摘要与总纲自动起名",
- "script_ph": "格式化剧本内容...", "chars_n": "{0} 字", "rewriting": "正在改写剧本...",
+ "script_ph": "格式化剧本内容...", "script_saved": "剧本已保存",
+ "save_dirty_hint": "有未保存的改动", "chars_n": "{0} 字", "rewriting": "正在改写剧本...",
  "ai_to_script": "AI 转剧本", "ai_to_script_tip": "用 AI 把原始内容整理成格式化剧本",
  "start_rewrite": "开始改写",
  "rewrite_empty_title": "AI 改写为格式化剧本",

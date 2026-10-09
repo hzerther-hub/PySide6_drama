@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
@@ -82,6 +82,9 @@ class IntroPreview(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         rect = self.rect()
         p.fillRect(rect, Qt.black)
+        if self.bg_image:                      # 叠加模式:铺分镜真实首帧/合成图当背景
+            pm = W.pixmap_from_media(self.bg_image, rect.width(), rect.height())
+            p.drawPixmap(rect, pm, QRectF(pm.rect()))
         if self.show_grid:                      # 九宫格辅助线
             p.setPen(QPen(Qt.darkGray, 1, Qt.DotLine))
             for i in (1, 2):
@@ -114,11 +117,12 @@ class IntroEditorDialog(QDialog):
         self.resize(680, 620)
         root = QVBoxLayout(self)
 
-        aw, ah = (int(x) for x in (aspect or "16:9").replace(":", "/").split("/"))
+        self.aspect = aspect or "16:9"
         self.preview = IntroPreview()
-        self.preview.setFixedHeight(220)
+        self.preview.setMinimumHeight(180)
+        self.preview.setMaximumHeight(260)
+        self._apply_preview_aspect()
         root.addWidget(self.preview)
-        self.aspect = aspect
 
         f = QFormLayout()
         mode_row = QWidget()
@@ -132,6 +136,10 @@ class IntroEditorDialog(QDialog):
         m_lay.addWidget(self.overlay_cb)
         m_lay.addStretch(1)
         f.addRow("显示方式", mode_row)
+        # 叠加模式的预览背景:取本集首个有 first_frame_image / composed_image 的分镜
+        # (storyboards 表没有 image_url 列,用错字段会让预览永远黑底)
+        self.overlay_cb.toggled.connect(self._sync_preview_bg)
+        self._sync_preview_bg(self.overlay_cb.isChecked())
 
         self.title_edit = QLineEdit(d["intro_title"] or d["title"] or "")
         self.title_edit.setMaxLength(60)
@@ -202,6 +210,32 @@ class IntroEditorDialog(QDialog):
         p.px = self.x_slider.value() / 100
         p.py = self.y_slider.value() / 100
         p.update()
+
+    def _sync_preview_bg(self, overlay_on: bool):
+        if not overlay_on:
+            self.preview.bg_image = None
+            self.preview.update()
+            return
+        row = db.q1("""SELECT sb.first_frame_image, sb.composed_image FROM storyboards sb
+                       JOIN episodes e ON e.id = sb.episode_id
+                       WHERE e.drama_id=? AND sb.deleted_at IS NULL
+                       AND (COALESCE(sb.first_frame_image,'')!='' OR COALESCE(sb.composed_image,'')!='')
+                       ORDER BY sb.storyboard_number LIMIT 1""", (self.drama_id,))
+        self.preview.bg_image = (row["first_frame_image"] or row["composed_image"]) if row else None
+        self.preview.update()
+
+    def _apply_preview_aspect(self):
+        """预览按项目画幅比例定尺寸:冒号形式必须转斜杠,否则比例失效、预览高度塌 0。"""
+        raw = str(self.aspect or "16:9")
+        try:
+            aw, ah = (int(x) for x in raw.replace(":", "/").split("/"))
+        except (ValueError, TypeError):
+            aw, ah = 16, 9
+        if aw <= 0 or ah <= 0:
+            aw, ah = 16, 9
+        # 按比例算预览高度(目标宽 440),夹在 [180, 260];竖版时宽度随之收窄
+        h = max(180, min(260, int(440 * ah / aw)))
+        self.preview.setFixedSize(max(140, int(h * aw / ah)), h)
 
     def _play(self):
         """模拟 ffmpeg 同款淡入淡出:fade = min(0.4, dur/3)。"""

@@ -27,18 +27,17 @@ import os
 import time
 
 from ..agents import runner
+from ..ai.jev_gate import JevBreaker, get_jev_gate
 from ..core import db
 
 DIFFS_CAP = 100
 # 熔断:连续失败到该次数后冷却,期间门控直接跳过(配置了但连不通 → 不用)
-BREAKER_FAILS = 2
-BREAKER_COOLDOWN_MS = 10 * 60 * 1000
 MIN_BODY_CHARS = 200
 
 CHARACTER_DIMENSIONS = ["年纪", "功法", "性格", "财产", "外貌", "位置"]
 WORLD_DIMENSIONS = ["时间线", "主线进度"]
 
-_breaker = {"fails": 0, "cooldown_until": 0.0}
+_breaker = JevBreaker("state-ledger")   # 按作用域独立熔断(对齐 jev-gate)
 
 EXTRACT_PROMPT = """请从本章正文中提取「人物状态变化」与「世界状态变化」,用于维护长篇的人物状态台账。
 人物维度限定:{dims};世界维度限定:{wdims}。
@@ -135,36 +134,26 @@ def merge_ledger(ledger: dict, changes: list, chapter: int) -> bool:
 
 
 # ── Jev 门控 ──
-def _build_gate_client():
-    """设置页 jev 活跃配置优先,环境变量回退;都没配返回 None(跳过)。"""
-    if os.environ.get("JEV_ENABLED") == "0":
-        return None
-    from ..ai import jev_client
-    client = jev_client.JevClient()
-    return client if client.is_configured() else None
-
-
 def jev_gate_state_diff(ledger: dict, changes: list) -> dict:
     """台账+变更是否矛盾。任何失败都返回 skipped —— 门控绝不阻断写作主流程。"""
     at = db.now()
     skip = lambda reason: {"enabled": True, "verdict": "skipped", "reason": reason, "at": at}
     if not changes:
         return {"enabled": True, "verdict": "ok", "reason": "no-changes", "at": at}
-    left = _breaker["cooldown_until"] - time.time()
-    if left > 0:
-        return skip(f"cooldown({int(left // 60) + 1}m)")
-    client = _build_gate_client()
-    if client is None:
-        return {"enabled": False, "verdict": "skipped", "reason": "unconfigured", "at": at}
+    if _breaker.in_cooldown():
+        return skip(_breaker.skip_reason())
+    gate = get_jev_gate()
+    if not gate.usable:
+        return {"enabled": not gate.disabled, "verdict": "skipped",
+                "reason": gate.reason or "unconfigured", "at": at}
+    client = gate.client
     names = sorted({c["character"] for c in changes if c.get("character")})
     state = _compact_ledger(ledger, names) + "\n本章变更:" + json.dumps(changes, ensure_ascii=False)
     result = client.decide(state, GATE_QUESTIONS)
     if not result or not result.get("answers"):
-        _breaker["fails"] += 1
-        if _breaker["fails"] >= BREAKER_FAILS:
-            _breaker["cooldown_until"] = time.time() + BREAKER_COOLDOWN_MS / 1000.0
+        _breaker.note_fail()
         return skip("jev-unreachable")
-    _breaker["fails"] = 0
+    _breaker.note_ok()
     conflict = _num((result["answers"].get("conflict") or {}).get("noul"))
     magnitude = _num((result["answers"].get("magnitude") or {}).get("score"))
     threshold = _num(os.environ.get("JEV_LEDGER_MIN_CONFLICT"), 0.7)
@@ -182,7 +171,30 @@ def _num(value, default=None):
 
 
 # ── 编排入口 ──
-def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = None) -> dict | None:
+def resolve_text_config_id_for_model(model: str | None) -> int | None:
+    """按模型名反查承载它的活跃文本配置 id。
+
+    同名模型可挂在多个 provider 下(如 deepseek-v4-pro 同时出现在 OpenAI 兼容网关 / 官方),
+    只传模型名不传 config_id 时会用「当前启用配置」的 provider/base_url 去请求该模型名 → 配错网关
+    (原版实测报 2013 unknown model)。在活跃 text 配置里找 model 含该名字的那条,
+    让「选什么模型就跟什么配置配合」对任意新增模型自动成立。
+    """
+    if not model:
+        return None
+    from ..ai import registry
+    for r in registry.list_configs("text"):
+        if not r["is_active"]:
+            continue
+        names = db.jload(r["models"], []) if r.get("models") else []
+        if isinstance(names, str):
+            names = [names]
+        if any(str(m).lower() == model.lower() for m in names or []):
+            return r["id"]
+    return None
+
+
+def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = None,
+                        model: str | None = None) -> dict | None:
     """章节正文完成后调用(批量流水线每章一次;也可手动重跑)。返回 {changes, jev} 或 None。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     text = (ep["content"] or "") if ep else ""
@@ -195,6 +207,10 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     prompt = EXTRACT_PROMPT.format(
         dims="/".join(CHARACTER_DIMENSIONS), wdims="/".join(WORLD_DIMENSIONS),
         ledger=json.dumps(ledger, ensure_ascii=False)[:2500], text=text[:6000])
+    # 提取模型跟随本次写作选中的文本模型(顶栏下拉),与正文同一模型保持判断口径一致;
+    # 只给了模型名时反查承载它的配置,防配错网关。
+    if config_id is None and model:
+        config_id = resolve_text_config_id_for_model(model)
     try:
         raw = runner.run_agent("novel_reviewer", prompt, temperature=0.2, config_id=config_id)
         parsed = runner.extract_json(raw) or {}
