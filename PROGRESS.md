@@ -375,3 +375,28 @@
 - 新增 `ui/intro_dialog.py` 片头模拟器:项目画幅预览(黑底+九宫格辅助线)+ **真字体 WYSIWYG**(QFontDatabase 加载 ttf)+ 拖拽定位文字中心点(与 ffmpeg `w*px-text_w/2` 同口径)+ 播放预览模拟 fade=min(0.4,dur/3) 淡入淡出 + 重置布局;改动即存(经 sanitize_intro 原版区间校验)。
 - 导出面板新增片头行:「叠加片头」勾选 + 片头名输入 + 「⚙ 片头设置」入口;拼接时按勾选传 intro 参数。
 - 截图 48(导出页片头行)/ 49(片头编辑器,10 字体下拉)。
+
+## 2026-09-29(第 24 轮:策划 AI 起草 + 小说生成完整性闸门)
+> 用户要求:「可以用AI生成。同时都要完整了才能进入小说生成。」对齐原版 draftNovelSection / wizardStepDone / NOVEL_REQUIRED_STEPS。
+### 1. 策划五件套支持 AI 起草
+- `novel_dialogs.NovelPlanDialog` 每个设定页签(总纲/世界观/故事合约/分卷战略)加 **「✨ AI 起草」+「保存」** 按钮(按钮用 WaitingButton,起草中显示盲文等待态)。
+- 起草逻辑对齐原版 `draftNovelSection`:
+  1. **先落库项目设定(简介/题材)** —— Agent 通过 read_novel_context 读取,否则起稿会跑偏;
+  2. 消息带**计划章数目标**(`计划共 N 章`),缺省取 `total_episodes` —— 原版注释指出这是「回炉 999→60」的根因;
+  3. 世界观/故事合约附 **structured 必传提示**(era/location/power_system/factions; pov/tones/rules/word_range);
+  4. 调 `novel_planner` Agent,完成后从库重载对应页签。
+### 2. 小说生成完整性闸门(写红线)
+- `NOVEL_REQUIRED_STEPS = [1,2,3,4,5,7]`(6 卷战略为节拍层,可选)。
+- `wizard_step_done()` **严格对齐原版**:
+  | 步骤 | 判定 | 数据源 |
+  |---|---|---|
+  | 1 项目设定 | 标题 + 简介 | dramas.title + metadata.intro |
+  | 2 总纲 | 非空 | novels_outline |
+  | 3 世界观 | era + location | **novel_meta.world**(落库值) |
+  | 4 故事合约 | pov + rules非空 + tones非空 | **novel_meta.contract**(落库值) |
+  | 5 角色设定 | 角色表有行 | characters |
+  | 7 章节计划 | 章节数 > 0 | novel_chapters |
+  ★ 步骤 3/4 读**已落库的 novel_meta** 而非向导内存草稿 —— 原版修复的正是「刷新页面后误判未完成」。
+- 闸门生效:缺步骤时 **「AI 生成小说」与「批量写本章及后续」双按钮禁用**,工具条常驻琥珀色提示条列出缺哪几步;
+  work_type 从库直取(避免 `_drama` 未就绪导致闸门失效)。
+- 截图 50(闸门禁用态)/ 51(策划弹窗 AI 起草)。

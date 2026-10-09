@@ -163,6 +163,7 @@ class EpisodePage(QWidget):
         self.panels["comic"].setVisible(work not in ("novel", "promotion", "video_clone"))
         self._reload_models()
         self._reload_raw()
+        self._update_novel_gate()
         self._reload_assets()
         self._reload_storyboard()
         self._reload_comic()
@@ -334,6 +335,10 @@ class EpisodePage(QWidget):
         edit_btn = QPushButton("✏ 改稿")
         edit_btn.clicked.connect(self._edit_chapter)
         bar2.addWidget(plan_btn)
+        self.gate_lab = W.muted("")
+        self.gate_lab.setStyleSheet("color:#ad6800;background:#fff7e6;border-radius:6px;padding:4px 8px;")
+        self.gate_lab.setVisible(False)
+        bar2.addWidget(self.gate_lab)
         self.review_btn = review_btn
         review_btn.setToolTip("六维审校(连贯性/人设/设定/物件/文风/节奏)·点击查看问题明细")
         self.summary_btn = QPushButton("≡ 全书审校清单")
@@ -384,12 +389,14 @@ class EpisodePage(QWidget):
         QMessageBox.information(self, tr("save"), "OK")
 
     def _novel_redline_hint(self) -> str:
-        """写作红线提示:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。"""
+        """写作红线闸门:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。"""
         try:
-            from ..pipeline import novel as novel_pipe
-            if self._drama.get("work_type") != "novel":
+            # 直接从库取 work_type,避免 _drama 未就绪导致闸门失效
+            row = db.q1("SELECT work_type FROM dramas WHERE id=?", (self.drama_id,))
+            if not row or (row["work_type"] or "") != "novel":
                 return ""
-            missing = novel_pipe.missing_steps_text(self.drama_id)
+            from .novel_dialogs import gate_message
+            missing = gate_message(self.drama_id)
             return f"请先完成步骤 {missing} 的设定" if missing else ""
         except Exception:  # noqa: BLE001
             return ""
@@ -403,6 +410,9 @@ class EpisodePage(QWidget):
         if hasattr(self, "batch_btn"):
             self.batch_btn.setEnabled(not hint)
             self.batch_btn.setToolTip(hint or "批量写本章及后续")
+        if hasattr(self, "gate_lab"):
+            self.gate_lab.setText(hint)
+            self.gate_lab.setVisible(bool(hint))
 
     def _ai_novel(self):
         from ..pipeline import novel as novel_pipe
