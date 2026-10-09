@@ -90,6 +90,16 @@ class CharacterFaceSwapDialog(QDialog):
         for k, label in (("photorealistic", "写实"), ("cinematic", "电影感"), ("anime", "动漫")):
             self.style_combo.addItem(label, k)
         self.style_combo.setCurrentIndex(1)     # 默认 cinematic
+        opt.addWidget(QLabel("引擎"))
+        self.engine_combo = QComboBox()
+        self._engines = []
+        for st in ("faceswap", "image"):       # 换脸组 + 图片组(风格化重绘)
+            for r in db.q("SELECT id,provider,remark,base_url FROM ai_service_configs "
+                          "WHERE service_type=? AND is_active=1 ORDER BY priority DESC", (st,)):
+                self.engine_combo.addItem(f"{r['remark'] or r['provider']}", (r["id"], r["provider"]))
+        if self.engine_combo.count() == 0:
+            self.engine_combo.addItem("本地 InsightFace", (None, "local-faceswap"))
+        opt.addWidget(self.engine_combo)
         opt.addWidget(QLabel("风格"))
         opt.addWidget(self.style_combo)
         opt.addSpacing(10)
@@ -190,10 +200,13 @@ class CharacterFaceSwapDialog(QDialog):
         self.status.setText(tr("in_progress") + "…")
         template = str(config.media_url_to_path(self.character["image_url"]))
         src, all_faces, enhance, cfg_id = self.source_path, self.all_faces.isChecked(), self.enhance.isChecked(), self.cfg_id
+        eng = self.engine_combo.currentData() or (cfg_id, "local-faceswap")
+        engine_id, provider = eng[0], eng[1]
 
         def job(tid):
-            return str(face_swap.swap_one(template, src, swap_all_faces=all_faces,
-                                          face_enhance=enhance, config_id=cfg_id))
+            return str(face_swap.swap_one_by_provider(
+                src, template, provider=provider, config_id=engine_id,
+                swap_all_faces=all_faces, face_enhance=enhance))
         def done(tid, result, error):
             self.go_btn.setEnabled(True)
             if error:
@@ -222,14 +235,17 @@ class CharacterFaceSwapDialog(QDialog):
         self._batch_running = True
         self.batch_btn.setEnabled(False)
         all_faces, enhance, cfg_id = self.all_faces.isChecked(), self.enhance.isChecked(), self.cfg_id
+        eng = self.engine_combo.currentData() or (self.cfg_id, "local-faceswap")
+        engine_id, provider = eng[0], eng[1]
         src = self.source_path
 
         def job(tid):
             out = {}
             for label, _url, local in items:
                 try:
-                    p = face_swap.swap_one(local, src, swap_all_faces=all_faces,
-                                           face_enhance=enhance, config_id=cfg_id)
+                    p = face_swap.swap_one_by_provider(
+                        src, local, provider=provider, config_id=engine_id,
+                        swap_all_faces=all_faces, face_enhance=enhance)
                     out[label] = str(p)
                 except Exception:  # noqa: BLE001
                     out[label] = ""

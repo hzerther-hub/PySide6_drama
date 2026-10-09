@@ -30,9 +30,13 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     if system:
         msgs.append({"role": "system", "content": system})
     if image_urls:
-        # OpenAI 兼容多模态格式(MiniMax-M3 / Gemini-OpenAI 端点均按此收图)
+        # OpenAI 兼容多模态格式(MiniMax-M3 / Gemini-OpenAI 端点均按此收图/收视频)
         parts: list[dict] = [{"type": "text", "text": prompt}]
-        parts += [{"type": "image_url", "image_url": {"url": u}} for u in image_urls]
+        for u in image_urls:
+            if u.startswith("data:video") or str(u).lower().endswith((".mp4", ".mov", ".webm")):
+                parts.append({"type": "video_url", "video_url": {"url": u}})
+            else:
+                parts.append({"type": "image_url", "image_url": {"url": u}})
         msgs.append({"role": "user", "content": parts})
     else:
         msgs.append({"role": "user", "content": prompt})

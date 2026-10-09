@@ -26,7 +26,15 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
         "scenes": [r["name"] for r in db.q("SELECT name FROM scenes WHERE drama_id=?", (drama_id,))],
         "props": [r["name"] for r in db.q("SELECT name FROM props WHERE drama_id=?", (drama_id,))],
     }
-    prompt = f"""剧本(第 {ep['episode_number']} 集):
+    d = db.q1("SELECT title, novel_style, style, metadata FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload(d["metadata"], {}) or {} if d else {}
+    ctx = ""
+    if d:
+        parts = [f"题材:{meta.get('genre', '') or '未定'}", f"简介:{meta.get('intro', '') or '未定'}"]
+        if (d["novel_style"] or "").strip():
+            parts.append(f"写法文风:{d['novel_style'].strip()}")
+        ctx = "作品设定(据此匹配场景年代/道具质感/语言风格,不要脱离):\n" + "\n".join(parts) + "\n\n"
+    prompt = f"""{ctx}剧本(第 {ep['episode_number']} 集):
 {script[:12000]}
 
 项目已有资产(不要重复提取):

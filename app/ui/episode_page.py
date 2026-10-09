@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                                QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QSplitter,
@@ -34,40 +34,209 @@ from .braille import WaitingButton
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
                "storyboard": "storyboard", "comic": "comic", "export": "export_stage"}
+STEP_ICONS = {"raw": "▤", "rewrite": "✎", "assets": "☺",
+              "storyboard": "▦", "comic": "▩", "export": "⤓"}
+# 三段环节 → 步骤(对齐原版 sidebarSections)
+NAV_SECTIONS = [("script", "step_script", ["raw", "rewrite"]),
+                ("production", "step_production", ["assets", "storyboard", "comic"]),
+                ("export", "step_export", ["export"])]
+SECTION_OF = {k: sid for sid, _, keys in NAV_SECTIONS for k in keys}
+# 底部四段跑马灯:剧本 / 资产 / 视漫 / 漫画(点击直接跳对应步骤)
+PROGRESS_STEPS = [("raw", "stage_script"), ("assets", "stage_assets"),
+                  ("storyboard", "stage_video"), ("comic", "stage_comic")]
 
 
 class StepNav(QWidget):
+    """流水线侧栏(对齐原版 episode.vue):三段环节 + 环节状态 + 四段进度 + 折叠/刷新。"""
+
     step_changed = Signal(str)
+    refresh_requested = Signal()
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(180)
+        self.setObjectName("sidebar")
+        self.setFixedWidth(196)
+        self._collapsed = False
+        self._active = "raw"
+        self._states: dict[str, str] = {}
+        self._section_hidden: dict[str, bool] = {}
+        self._btn_group = QButtonGroup(self)
+        self._btn_group.setExclusive(True)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 20, 8, 20)
-        lay.setSpacing(4)
+        lay.setContentsMargins(6, 10, 6, 10)
+        lay.setSpacing(2)
+
+        self._section_state: dict[str, QLabel] = {}
+        self._section_tag: dict[str, QLabel] = {}
+        self._section_head: dict[str, QWidget] = {}
         self._btns: dict[str, QPushButton] = {}
-        for group, keys in (("step_script", ["raw", "rewrite"]),
-                            ("step_production", ["assets", "storyboard", "comic"]),
-                            ("step_export", ["export"])):
-            lay.addWidget(W.muted(tr(group)))
+
+        for sid, group_key, keys in NAV_SECTIONS:
+            head = QWidget()
+            hrow = QHBoxLayout(head)
+            hrow.setContentsMargins(4, 0, 4, 0)
+            hrow.setSpacing(6)
+            state = QLabel("·")
+            state.setObjectName("pipeState")
+            name = QLabel(tr(group_key))
+            name.setObjectName("pipeSection")
+            tag = QLabel(tr("doing_now"))
+            tag.setObjectName("pipeTag")
+            tag.setVisible(False)
+            hrow.addWidget(state)
+            hrow.addWidget(name)
+            hrow.addStretch(1)
+            hrow.addWidget(tag)
+            self._section_state[sid] = state
+            self._section_tag[sid] = tag
+            self._section_head[sid] = head
+            lay.addWidget(head)
             for k in keys:
-                b = QPushButton("  " + tr(STEP_LABELS[k]))
-                b.setStyleSheet("text-align:left; border:none; background:transparent;")
+                b = QPushButton("   " + STEP_ICONS[k] + "  " + tr(STEP_LABELS[k]))
+                b.setObjectName("pipeItem")
+                b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
                 b.clicked.connect(lambda _=False, kk=k: self.step_changed.emit(kk))
+                self._btn_group.addButton(b)
                 self._btns[k] = b
                 lay.addWidget(b)
-            lay.addSpacing(8)
-        lay.addStretch(1)
-        self.progress = QLabel("1/4")
-        self.progress.setObjectName("muted")
-        lay.addWidget(self.progress)
+            lay.addSpacing(6)
 
-    def set_active(self, key: str):
+        lay.addStretch(1)
+
+        # ── 底部:折叠 + 四段跑马灯 + 刷新 ──
+        self.collapse_btn = QPushButton("‹  " + tr("collapse_sidebar"))
+        self.collapse_btn.setObjectName("pipeToggle")
+        self.collapse_btn.setCursor(Qt.PointingHandCursor)
+        self.collapse_btn.clicked.connect(self.toggle_collapsed)
+        lay.addWidget(self.collapse_btn)
+
+        prog = QWidget()
+        prog.setObjectName("pipeProgress")
+        pl = QVBoxLayout(prog)
+        pl.setContentsMargins(4, 4, 4, 4)
+        pl.setSpacing(4)
+        top = QHBoxLayout()
+        self.prog_title = QLabel(tr("stage_script"))
+        self.prog_title.setObjectName("pipeProgLabel")
+        self.progress = QLabel("1/4")
+        self.progress.setObjectName("pipeProgLabel")
+        top.addWidget(self.prog_title)
+        top.addStretch(1)
+        top.addWidget(self.progress)
+        pl.addLayout(top)
+        seg_row = QHBoxLayout()
+        seg_row.setSpacing(4)
+        self._segs: dict[str, QPushButton] = {}
+        for key, label_key in PROGRESS_STEPS:
+            seg = QPushButton()
+            seg.setObjectName("pipeSeg")
+            seg.setFixedHeight(6)
+            seg.setCursor(Qt.PointingHandCursor)
+            seg.setToolTip(tr(label_key))
+            seg.clicked.connect(lambda _=False, kk=key: self.step_changed.emit(kk))
+            self._segs[key] = seg
+            seg_row.addWidget(seg, 1)
+        pl.addLayout(seg_row)
+        lab_row = QHBoxLayout()
+        lab_row.setSpacing(4)
+        self._seg_labels: dict[str, QLabel] = {}
+        for key, label_key in PROGRESS_STEPS:
+            lb = QLabel(tr(label_key))
+            lb.setObjectName("pipeProgLabel")
+            lb.setAlignment(Qt.AlignCenter)
+            self._seg_labels[key] = lb
+            lab_row.addWidget(lb, 1)
+        pl.addLayout(lab_row)
+        self.prog_box = prog
+        lay.addWidget(prog)
+
+        self.refresh_btn = QPushButton("⟳  " + tr("refresh_data"))
+        self.refresh_btn.setObjectName("pipeToggle")
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self.refresh_requested.emit)
+        lay.addWidget(self.refresh_btn)
+
+    # ── 折叠 ──
+    def toggle_collapsed(self):
+        self._collapsed = not self._collapsed
+        self.setFixedWidth(44 if self._collapsed else 196)
         for k, b in self._btns.items():
-            b.setStyleSheet(
-                "text-align:left; border:none; background:transparent; color:#4b6ef5; font-weight:700;"
-                if k == key else "text-align:left; border:none; background:transparent;")
+            b.setText(f"   {STEP_ICONS[k]}" if self._collapsed
+                      else f"   {STEP_ICONS[k]}  {tr(STEP_LABELS[k])}")
+            b.setToolTip(tr(STEP_LABELS[k]) if self._collapsed else "")
+        self.collapse_btn.setText("›" if self._collapsed else "‹  " + tr("collapse_sidebar"))
+        self.refresh_btn.setText("⟳" if self._collapsed else "⟳  " + tr("refresh_data"))
+        self.prog_box.setVisible(not self._collapsed)
+        self._apply_visibility()
+
+    # ── 状态 ──
+    def set_active(self, key: str):
+        self._active = key
+        b = self._btns.get(key)
+        if b and not b.isChecked():
+            b.setChecked(True)
+        self._refresh_sections()
+
+    def set_step_states(self, states: dict):
+        """states: {step_key: done|pending} —— 用于环节状态判定。"""
+        self._states = states
+        self._refresh_sections()
+
+    def set_progress(self, current_key: str, done_keys: list):
+        """四段跑马灯:当前段高亮 + 已完成段填色。"""
+        order = [k for k, _ in PROGRESS_STEPS]
+        idx = order.index(current_key) if current_key in order else 0
+        for i, (key, label_key) in enumerate(PROGRESS_STEPS):
+            seg = self._segs[key]
+            seg.setProperty("state", "done" if key in done_keys else ("current" if i == idx else ""))
+            seg.style().unpolish(seg)
+            seg.style().polish(seg)
+            lb = self._seg_labels[key]
+            lb.setProperty("on", "1" if i == idx else "0")
+            lb.setProperty("done", "1" if key in done_keys else "0")
+            lb.style().unpolish(lb)
+            lb.style().polish(lb)
+        self.progress.setText(f"{idx + 1}/4")
+        self.prog_title.setText(tr(PROGRESS_STEPS[idx][1]))
+
+    def _refresh_sections(self):
+        """环节状态:✓ 已完成 / ◐ 进行中(带「进行中」标签)/ · 未开始;整段不可用则隐藏。"""
+        for sid, _, keys in NAV_SECTIONS:
+            states = [self._states.get(k, "pending") for k in keys]
+            usable = any(s != "locked" for s in states)
+            self._section_hidden[sid] = not usable
+            for k in keys:
+                self._btns[k].setVisible(usable or self._collapsed)
+                self._btns[k].setEnabled(self._states.get(k, "pending") != "locked")
+            if not usable:
+                continue
+            if sid == "export":                       # 导出段不标状态(对齐原版 'none')
+                self._section_state[sid].setText("·")
+                self._section_state[sid].setProperty("done", "0")
+                self._section_tag[sid].setVisible(False)
+            else:
+                done = all(s == "done" for s in states)
+                started = any(s in ("done", "active") for s in states)
+                active = not done and (SECTION_OF.get(self._active) == sid
+                                       or (started and sid == "production"))
+                lab = self._section_state[sid]
+                lab.setText("✓" if done else ("◐" if active else "·"))
+                lab.setProperty("done", "1" if (done or active) else "0")
+                lab.style().unpolish(lab)
+                lab.style().polish(lab)
+                self._section_tag[sid].setVisible(active and not done)
+        self._apply_visibility()
+
+    def _apply_visibility(self):
+        """折叠态 + 整段不可用的合并可见性。"""
+        for sid, head in self._section_head.items():
+            head.setVisible(not self._collapsed and not self._section_hidden.get(sid))
+        for sid, _, keys in NAV_SECTIONS:
+            if self._section_hidden.get(sid):
+                continue
+            for k in keys:
+                self._btns[k].setVisible(True)
 
 
 class EpisodePage(QWidget):
@@ -122,6 +291,7 @@ class EpisodePage(QWidget):
         body = QSplitter(Qt.Horizontal)
         self.nav = StepNav()
         self.nav.step_changed.connect(self._goto_step)
+        self.nav.refresh_requested.connect(self.refresh)
         body.addWidget(self.nav)
 
         self.stack_holder = QWidget()
@@ -249,13 +419,87 @@ class EpisodePage(QWidget):
         self.nav.set_active(key)
         for k, p in self.panels.items():
             p.setVisible(k == key)
-        stage = {"raw": "1/4", "rewrite": "1/4", "assets": "2/4", "storyboard": "3/4",
-                 "comic": "3/4", "export": "4/4"}[key]
-        self.nav.progress.setText(stage)
+        self._sync_nav_progress(key)
+
+    def _sync_nav_progress(self, key: str):
+        """四段跑马灯跟随当前步骤:导出归到「漫画」段(与原版四段一致)。"""
+        order = [k for k, _ in PROGRESS_STEPS]
+        cur = key if key in order else ("comic" if key == "export" else order[0])
+        self.nav.set_progress(cur, self._progress_done_keys())
+
+    def _progress_done_keys(self) -> list:
+        """已完成的四段(对齐原版 mainStageDone):剧本有内容 / 资产齐 / 视频齐 / 漫画齐。"""
+        if not self.episode_id:
+            return []
+        ep = db.q1("SELECT content FROM episodes WHERE id=?", (self.episode_id,))
+        script_ok = bool((ep["content"] if ep else "") or "")
+        if not script_ok:
+            d = db.q1("SELECT novel_outline, novel_chapters FROM dramas WHERE id=?",
+                      (self.drama_id,)) if self.drama_id else None
+            script_ok = bool(d and ((d["novel_outline"] or "").strip()
+                                    or (db.jload(d["novel_chapters"], []) or [])))
+        nb, nv = db.q1("""SELECT COUNT(*) c,
+                          SUM(CASE WHEN COALESCE(video_url, composed_video_url,'')!='' THEN 1 ELSE 0 END) v
+                          FROM storyboards WHERE episode_id=? AND deleted_at IS NULL""",
+                       (self.episode_id,))
+        na, nr = db.q1("""SELECT COUNT(*) c,
+                          SUM(CASE WHEN COALESCE(c.image_url,'')!='' THEN 1 ELSE 0 END) r
+                          FROM episode_characters ec JOIN characters c ON c.id=ec.character_id
+                          WHERE ec.episode_id=?""", (self.episode_id,))
+        ns, nrs = db.q1("""SELECT COUNT(*) c,
+                           SUM(CASE WHEN COALESCE(s.image_url,'')!='' THEN 1 ELSE 0 END) r
+                           FROM episode_scenes es JOIN scenes s ON s.id=es.scene_id
+                           WHERE es.episode_id=?""", (self.episode_id,))
+        np, nrp = db.q1("""SELECT COUNT(*) c,
+                           SUM(CASE WHEN COALESCE(p.image_url,'')!='' THEN 1 ELSE 0 END) r
+                           FROM episode_props ep JOIN props p ON p.id=ep.prop_id
+                           WHERE ep.episode_id=?""", (self.episode_id,))
+        nc, nci = db.q1("""SELECT COUNT(*) c,
+                           SUM(CASE WHEN COALESCE(image_url,'')!='' THEN 1 ELSE 0 END) i
+                           FROM comic_panels WHERE episode_id=?""", (self.episode_id,))
+        done = []
+        if script_ok:
+            done.append("raw")
+        total_assets = (na or 0) + (ns or 0) + (np or 0)
+        ready_assets = (nr or 0) + (nrs or 0) + (nrp or 0)
+        if total_assets and ready_assets == total_assets:
+            done.append("assets")
+        if nb and (nv or 0) == nb:
+            done.append("storyboard")
+        if nc and (nci or 0) == nc:
+            done.append("comic")
+        return done
+
+    def _step_states(self) -> dict:
+        """环节状态供侧栏 ✓ 标记与可用性:done / pending / locked(项目类型不支持)。"""
+        done_keys = self._progress_done_keys()
+        work = self._drama["work_type"] if self._drama else None
+        st = {}
+        for k in STEPS:
+            if k in ("assets", "storyboard", "export") and work == "novel":
+                st[k] = "locked"
+            elif k == "comic" and work in ("novel", "promotion", "video_clone"):
+                st[k] = "locked"
+            elif k == "export":
+                st[k] = "done" if ("comic" in done_keys or "storyboard" in done_keys) else "pending"
+            elif k in ("raw", "rewrite"):
+                st[k] = "done" if "raw" in done_keys else "pending"
+            else:
+                st[k] = "done" if k in done_keys else "pending"
+        return st
 
     def _open_tasks(self):
         from .task_panel import TaskPanel
         TaskPanel(self.episode_id, self).exec()
+
+    def refresh(self):
+        """侧栏「刷新数据」:重载当前集与各面板状态。"""
+        if not self.episode_id:
+            return
+        keep = self._step
+        self.load(self.drama_id, self.episode_id)
+        self._goto_step(keep)
+        ok(tr("refresh_data"))
 
     def _refresh_status(self):
         if self._loading or not self.episode_id:
@@ -269,6 +513,8 @@ class EpisodePage(QWidget):
             self.sb_stat.setText(f"{tr('in_progress')} {stats['processing']} · {tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}")
             active = TASKMGR.active_count()
             self.task_btn.setText(f"{tr('tasks')}" + (f" · {active}" if active else ""))
+            self.nav.set_step_states(self._step_states())
+            self._sync_nav_progress(self._step)
         finally:
             self._loading = False
 
@@ -307,6 +553,8 @@ class EpisodePage(QWidget):
         self.words_spin.setSpecialValueText("∞")
         self.style_edit = QLineEdit()
         self.style_edit.setPlaceholderText(tr("style_label"))
+        self.style_edit.setToolTip("预设之外的自定义文风,失焦即存到本项目")
+        self.style_edit.editingFinished.connect(self._save_novel_style)
         save_btn = QPushButton(tr("save"))
         save_btn.clicked.connect(self._save_raw)
         self.novel_btn = W.primary_btn(tr("ai_novel"))
@@ -318,6 +566,16 @@ class EpisodePage(QWidget):
         bar.addWidget(QLabel(tr("target_words")))
         bar.addWidget(self.words_spin)
         bar.addWidget(QLabel(tr("style_label")))
+        # 文风:6 个预设 + 自定义(对齐原版 episode.vue 的 NOVEL_STYLES,写 dramas.novel_style)
+        from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
+        self.style_combo = QComboBox()
+        self.style_combo.setMinimumWidth(120)
+        self.style_combo.addItem("", "")
+        for name, prompt in NOVEL_STYLES:
+            self.style_combo.addItem(name, prompt)
+        self.style_combo.addItem(tr("style_custom"), NOVEL_STYLE_CUSTOM)
+        self.style_combo.currentIndexChanged.connect(self._on_style_pick)
+        bar.addWidget(self.style_combo)
         bar.addWidget(self.style_edit, 1)
         bar.addWidget(ai_btn)
         bar.addWidget(novel_btn)
@@ -354,12 +612,50 @@ class EpisodePage(QWidget):
         lay.addWidget(self.raw_edit, 1)
 
     def _reload_raw(self):
+        from ..pipeline import novel as novel_pipe
         ep = self._ep
         self.raw_edit.setPlainText(ep["content"] or "")
         self.words_spin.setValue(ep["target_words"] or 0)
-        self.style_edit.setText(db.get_setting("novel_style", "爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置"))
+        self.style_edit.blockSignals(True)
+        cur = novel_pipe.get_novel_style(self.drama_id)
+        self.style_edit.setText(cur)
+        self.style_combo.blockSignals(True)
+        idx = self.style_combo.findData(cur)
+        if idx < 0 and cur:
+            self.style_combo.setCurrentIndex(self.style_combo.findData(novel_pipe.NOVEL_STYLE_CUSTOM))
+        else:
+            self.style_combo.setCurrentIndex(max(0, idx))
+        self.style_combo.blockSignals(False)
+        self.style_edit.blockSignals(False)
         if hasattr(self, "novel_btn"):
             self._update_novel_gate()
+
+    def _on_style_pick(self):
+        """选预设即写本项目;选「自定义」把全文塞进输入框继续改。"""
+        from ..pipeline import novel as novel_pipe
+        data = self.style_combo.currentData()
+        if not data:
+            return
+        if data == novel_pipe.NOVEL_STYLE_CUSTOM:
+            self.style_edit.setFocus()
+            return
+        self.style_edit.setText(data)
+        self._save_novel_style()
+
+    def _save_novel_style(self):
+        from ..pipeline import novel as novel_pipe
+        if not self.drama_id:
+            return
+        text = self.style_edit.text().strip()
+        if text == novel_pipe.get_novel_style(self.drama_id):
+            return
+        novel_pipe.set_novel_style(self.drama_id, text)
+        idx = self.style_combo.findData(text)
+        self.style_combo.blockSignals(True)
+        self.style_combo.setCurrentIndex(
+            idx if idx >= 0 else self.style_combo.findData(novel_pipe.NOVEL_STYLE_CUSTOM))
+        self.style_combo.blockSignals(False)
+        ok(tr("style_saved"))
 
 
     def _open_ai_edit(self, editor):
@@ -612,7 +908,8 @@ class EpisodePage(QWidget):
     def _save_raw_silent(self):
         db.ex("UPDATE episodes SET content=?, target_words=?, updated_at=? WHERE id=?",
               (self.raw_edit.toPlainText(), self.words_spin.value(), db.now(), self.episode_id))
-        db.set_setting("novel_style", self.style_edit.text().strip())
+        db.set_setting("novel_style", self.style_edit.text().strip())   # 全局兜底
+        self._save_novel_style()                                  # 项目级为准
         self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
 
     # ── 阶段② AI 改写 ──

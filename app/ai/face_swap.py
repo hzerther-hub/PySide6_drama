@@ -18,6 +18,7 @@ from pathlib import Path
 import requests
 
 from ..core import config
+from . import registry
 
 DEFAULT_BASE = "http://127.0.0.1:5678"
 
@@ -91,3 +92,101 @@ def swap_one(template_path: str | Path, source_path: str | Path,
 
 def test_config(cfg: dict) -> tuple[bool, str]:
     return health(cfg.get("base_url"))
+
+
+# ── 远程换脸(对齐原版 4c6d1de / 25131f7)──
+REMOTE_BACKOFF_S = [3, 6, 12]          # 503 退避表,优先用 Retry-After
+REMOTE_TIMEOUT_S = 300                  # 纯 CPU 推理,大图一两分钟
+NO_RETRY_STATUS = {400, 401, 413, 422, 502}
+
+
+def _inline_image(url: str) -> str:
+    """把图转 data URL(远程 URL 也下载后内联,避免远程拉不到我们给的地址触发 502)。"""
+    import mimetypes
+    from ..core import config as _cfg
+    if str(url).startswith("data:"):
+        return url
+    p = (_cfg.media_url_to_path(url) if str(url).startswith(("/static/", "static/"))
+         else Path(url))
+    if not p.exists():
+        raise RuntimeError(f"图片不存在:{p}")
+    mime = mimetypes.guess_type(str(p))[0] or "image/png"
+    return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+
+
+def health_remote(config_id: int | None = None) -> tuple[bool, str]:
+    """远程换脸健康检查(按 provider=remote-faceswap 的 faceswap 配置)。"""
+    cfg = registry.default_config("faceswap", config_id)
+    if not cfg or cfg.get("provider") != "remote-faceswap":
+        return False, "远程换脸未配置(设置页添加换脸服务:provider=remote-faceswap)"
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
+        return False, "远程换脸配置缺少 API Key"
+    base = (cfg.get("base_url") or "https://face.mei.biz").rstrip("/")
+    try:
+        r = requests.get(f"{base}/health", headers={"X-API-Key": key}, timeout=20)
+        ok_flag = r.json().get("ok", r.status_code == 200)
+        return bool(ok_flag), (r.json().get("model") or "remote")
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:120]
+
+
+def swap_remote(source_path: str | Path, template_path: str | Path,
+                output_format: str = "jpg", config_id: int | None = None):
+    """远程换脸:X-API-Key 鉴权,两张图内联,503 退避重试,结构化错误码透传。"""
+    cfg = registry.default_config("faceswap", config_id)
+    if not cfg or cfg.get("provider") != "remote-faceswap":
+        raise RuntimeError("远程换脸未配置(设置页需存在 provider=remote-faceswap 的换脸服务)")
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
+        raise RuntimeError("远程换脸配置缺少 API Key,请到设置页补全")
+    base = (cfg.get("base_url") or "https://face.mei.biz").rstrip("/")
+    try:
+        src_in = _inline_image(str(source_path))
+        tpl_in = _inline_image(str(template_path))
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"读取换脸图片失败:{e}") from e
+    payload = {"source_url": src_in, "template_url": tpl_in,
+                "source_index": 0, "template_index": 0,
+                "swap_all_faces": True, "output_format": output_format}
+    headers = {"Content-Type": "application/json", "X-API-Key": key}
+    last = ""
+    for attempt in range(len(REMOTE_BACKOFF_S) + 1):
+        try:
+            r = requests.post(f"{base}/swap", json=payload, headers=headers,
+                              timeout=REMOTE_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"远程换脸调用失败:{e}") from e
+        data = r.json() if r.content else {}
+        if r.status_code == 200 and data.get("ok"):
+            b64 = data.get("image_base64")
+            if not b64:
+                raise RuntimeError("远程换脸响应缺少 image_base64")
+            out = config.STATIC_DIR / "images" / f"rswap_{uuid.uuid4().hex[:12]}.{output_format}"
+            out.write_bytes(base64.b64decode(b64))
+            return out
+        # 结构化错误透传(远程中文 detail + error_code + hint)
+        detail = data.get("detail") or data.get("message") or r.text[:200]
+        last = f"{detail}" + (f"({data.get('error_code')})" if data.get("error_code") else "")
+        if r.status_code in NO_RETRY_STATUS:
+            raise RuntimeError(f"远程换脸失败:{last}")
+        if r.status_code == 503:      # 模型未加载,可退避重试
+            import time as _t
+            ra = r.headers.get("Retry-After")
+            wait = float(ra) if ra and ra.isdigit() else REMOTE_BACKOFF_S[min(attempt, len(REMOTE_BACKOFF_S) - 1)]
+            if attempt < len(REMOTE_BACKOFF_S):
+                _t.sleep(wait)
+                continue
+        break
+    raise RuntimeError(f"远程换脸失败:{last}")
+
+
+def swap_one_by_provider(source_path: str | Path, template_path: str | Path,
+                         provider: str | None = None, config_id: int | None = None,
+                         output_format: str = "jpg",
+                         swap_all_faces: bool = True, face_enhance: bool = False) -> Path:
+    """按所选引擎分发单图重绘(原版 bug:重绘写死本地引擎,选远程也失败)。"""
+    if provider == "remote-faceswap":
+        return swap_remote(source_path, template_path, output_format, config_id=config_id)
+    return swap_one(template_path, source_path, swap_all_faces=swap_all_faces,
+                    face_enhance=face_enhance, config_id=config_id)

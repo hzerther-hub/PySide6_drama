@@ -3,9 +3,37 @@
 from __future__ import annotations
 
 import json
+import re
 
 from ..agents import runner
 from ..core import config, db
+
+
+# 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
+NOVEL_STYLES = [
+    ("爽感快节奏", "短句为主，情绪外露，段落简短，冲突直给，爽点前置，每章末尾必有小高潮"),
+    ("细腻情感流", "重人物内心与情绪层次，描写细腻，节奏舒缓，重氛围与共情"),
+    ("悬疑紧张", "信息差驱动，多伏笔，短段制造压迫感，章末反转"),
+    ("古风雅致", "文白相间，用词考究，意境优先，节奏沉稳"),
+    ("幽默轻松", "吐槽视角，反差与梗密集，轻松诙谐但不脱离主线"),
+    ("硬核写实", "细节考据，冷静克制，强逻辑因果"),
+]
+NOVEL_STYLE_CUSTOM = "__custom__"
+DEFAULT_NOVEL_STYLE = NOVEL_STYLES[0][1]
+
+
+def get_novel_style(drama_id: int | None = None) -> str:
+    """项目级文风优先;没有项目则回落到全局设置,再回落到默认预设。"""
+    if drama_id:
+        d = db.q1("SELECT novel_style FROM dramas WHERE id=?", (drama_id,))
+        if d and (d["novel_style"] or "").strip():
+            return d["novel_style"].strip()
+    return db.get_setting("novel_style", "") or DEFAULT_NOVEL_STYLE
+
+
+def set_novel_style(drama_id: int, style: str) -> None:
+    db.ex("UPDATE dramas SET novel_style=?, updated_at=? WHERE id=?",
+          ((style or "").strip(), db.now(), drama_id))
 
 
 def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
@@ -21,8 +49,15 @@ def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
            json.dumps({"main_characters": data.get("main_characters", [])}, ensure_ascii=False),
            db.now(), drama_id))
     # 主要角色直接入资产库
+    _sync_characters(drama_id, data.get("main_characters", []) or [])
+    return data
+
+
+def _sync_characters(drama_id: int, chars: list) -> int:
+    """主要角色 → 资产库 characters(同名不重复插入),返回新增数。"""
     ts = db.now()
-    for c in data.get("main_characters", []) or []:
+    added = 0
+    for c in chars:
         name = (c.get("name") or "").strip()
         if not name:
             continue
@@ -31,7 +66,237 @@ def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
         db.ex("INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
               (drama_id, name, "lead" if c.get("role") in ("主角", "lead") else "supporting",
                c.get("appearance", ""), c.get("styling", ""), ts, ts))
-    return data
+        added += 1
+    return added
+
+
+def _novel_settings_ctx(drama_id: int) -> str:
+    """已确定的项目设定(供策划阶段保持一致)。"""
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
+    if not d:
+        return "(项目不存在)"
+    meta = db.jload(d["metadata"], {}) or {}
+    nm = db.jload(d["novel_meta"], {}) or {}
+    return f"""书名:{d['title']}
+题材:{meta.get('genre','') or '未定'}
+简介:{meta.get('intro','') or '未定'}
+写法文风:{(d['novel_style'] or '').strip() or '未选(按默认网文写法)'}
+视觉风格:{d['style'] or '未定'}
+总纲:{(d['novel_outline'] or '未定')[:1200]}
+世界观:{(d['novel_world'] or '未定')[:1200]}
+故事合约:{(d['novel_contract'] or '未定')[:800]}
+分卷战略:{str(d['novel_volume'] or '未定')[:1200]}
+已有章节计划:{len(db.jload(d['novel_chapters'], []) or [])} 章
+目标全书:{nm.get('chapter_count') or d['total_episodes'] or '未定'} 章 / 每章 {nm.get('word_count') or '未定'} 字"""
+
+
+CHAPTER_PLAN_LIMIT = 200
+CHAPTER_PLAN_PROMPT = """你是小说策划。基于已确定的项目设定,输出**逐章计划**。
+
+要求:
+- 正好 {count} 章,number 从 1 连续到 {count}
+- title ≤14 字;goal(本章目标)≤25 字;events(核心事件,写清冲突与结果)≤50 字;cliffhanger(章末钩子)≤25 字
+- 每章字数按 {words} 字安排,信息量与之匹配;不要为了凑章数复制情节
+- 服从总纲与分卷战略,人名与世界观术语必须与设定一致
+
+输出 JSON:{{"chapters":[{{"number":1,"title":"","goal":"","events":"","cliffhanger":""}}]}}"""
+
+SEGMENT_PLAN_PROMPT = """你是小说策划。{count} 章的长篇不适合逐章列细,改为**分段计划**。
+每段 20 章,共 {segments} 段。输出 JSON:
+{{"segments":[{{"range":"1-20","title":"","goal":"","key_events":[""],"arc":""}}],
+ "chapters":[{{"number":1,"title":"","goal":"","events":"","cliffhanger":""}}]}}
+其中 chapters 只给每段前 3 章的示例细节(共 {samples} 条),用于校准颗粒度;每章字数 {words} 字。"""
+
+
+def plan_chapters(drama_id: int, chapter_count: int | None = None,
+                  word_count: int | None = None, config_id: int | None = None) -> dict:
+    """AI 生成逐章计划(章节数/每章字数由用户在策划面板指定),落 novel_chapters。"""
+    nm = db.jload((db.q1("SELECT novel_meta,total_episodes FROM dramas WHERE id=?", (drama_id,))
+                   or {"novel_meta": None, "total_episodes": None})["novel_meta"], {}) or {}
+    n = int(chapter_count or nm.get("chapter_count") or db.q1(
+        "SELECT total_episodes FROM dramas WHERE id=?", (drama_id,))["total_episodes"] or 60)
+    words = int(word_count or nm.get("word_count") or 2500)
+    n = max(1, min(999, n))
+    ctx = _novel_settings_ctx(drama_id)
+    if n <= CHAPTER_PLAN_LIMIT:
+        raw = runner.run_agent("novel_planner",
+                               f"{ctx}\n\n{CHAPTER_PLAN_PROMPT.format(count=n, words=words)}",
+                               temperature=0.4, config_id=config_id)
+        chapters = _clean_chapter_list((runner.extract_json(raw) or {}).get("chapters"), n)
+    else:
+        segs = (n + 19) // 20
+        raw = runner.run_agent("novel_planner",
+                               f"{ctx}\n\n" + SEGMENT_PLAN_PROMPT.format(
+                                   count=n, segments=segs, samples=segs * 3, words=words),
+                               temperature=0.4, config_id=config_id)
+        data = runner.extract_json(raw) or {}
+        chapters = _clean_chapter_list(data.get("chapters"), n, allow_sparse=True)
+    if not chapters:
+        raise RuntimeError("AI 未返回章节计划,请重试或检查文本模型配置")
+    meta = nm
+    meta["chapter_count"] = n
+    meta["word_count"] = words
+    db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
+          (json.dumps(chapters, ensure_ascii=False), json.dumps(meta, ensure_ascii=False),
+           n, db.now(), drama_id))
+    return {"chapters": chapters, "count": len(chapters), "word_count": words}
+
+
+def _clean_chapter_list(raw, expected: int, allow_sparse: bool = False) -> list:
+    """规整 AI 返回的章节数组:补 number、截断到 expected、丢弃缺字段项。"""
+    out = []
+    for i, c in enumerate(raw or []):
+        if not isinstance(c, dict):
+            continue
+        goal = str(c.get("goal") or "").strip()
+        events = str(c.get("events") or "").strip()
+        if not goal and not events:
+            continue
+        out.append({"number": int(c.get("number") or i + 1),
+                    "title": str(c.get("title") or "").strip()[:40],
+                    "goal": goal[:200], "events": events[:500],
+                    "cliffhanger": str(c.get("cliffhanger") or "").strip()[:200]})
+    out.sort(key=lambda c: c["number"])
+    if allow_sparse:
+        return out
+    return out[:expected] or out
+
+
+CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与章节计划,设计**主要角色**。
+
+要求:
+- 6-12 个:1 个主角 + 2-3 个核心对手/伙伴 + 若干关键配角
+- role 写"主角"/"对手"/"同伴"/"配角" 之一
+- motivation(动机)与章节计划中的实际行为对得上,不要空泛
+- appearance(外形)要能直接转成文生图提示词(年龄段/性别/发型/体型/标志特征/典型穿着)
+- styling(服装风格)同样给出可出图的具体描述
+
+输出 JSON:{{"characters":[{{"name":"","role":"","identity":"","motivation":"",
+"appearance":"","styling":""}}]}}只输出 JSON。"""
+
+
+def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
+    """AI 生成主要角色。章节计划缺失时先在后台补章节计划(依赖先行)。"""
+    d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
+    chapters = db.jload(d["novel_chapters"], []) if d else []
+    if not chapters:
+        plan_chapters(drama_id, config_id=config_id)          # 章节计划是角色设计的前置
+        d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
+        chapters = db.jload(d["novel_chapters"], []) or []
+    ctx = _novel_settings_ctx(drama_id)
+    plan_txt = chapters_to_text(chapters)[:6000]
+    raw = runner.run_agent("novel_planner",
+                           f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}",
+                           temperature=0.5, config_id=config_id)
+    chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
+    if not chars:
+        raise RuntimeError("AI 未返回角色,请重试或检查文本模型配置")
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
+    meta["main_characters"] = chars
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+    _sync_characters(drama_id, chars)
+    return {"characters": chars, "count": len(chars)}
+
+
+def _clean_characters(raw) -> list:
+    out = []
+    for c in raw or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({"name": name[:40], "role": str(c.get("role") or "配角")[:20],
+                    "identity": str(c.get("identity") or "").strip()[:200],
+                    "motivation": str(c.get("motivation") or "").strip()[:200],
+                    "appearance": str(c.get("appearance") or "").strip()[:400],
+                    "styling": str(c.get("styling") or "").strip()[:400]})
+    return out[:12]
+
+
+CHAPTER_LINE_RE = re.compile(r"^\s*第\s*([0-9零一二两三四五六七八九十百千]+)\s*[章集回节]?\s*(.*)$")
+FIELD_ALIASES = {"目标": "goal", "事件": "events", "钩子": "cliffhanger",
+                 "goal": "goal", "events": "events", "cliffhanger": "cliffhanger"}
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _chapter_num(raw: str) -> int:
+    """章号:阿拉伯数字直接取;中文数字(含「十/百/千」)按位展开。"""
+    s = (raw or "").strip()
+    if s.isdigit():
+        return int(s)
+    if not s or any(c not in _CN_DIGITS and c not in "十百千" for c in s):
+        return 0
+    total, section, number = 0, 0, 0
+    for c in s:
+        if c in _CN_DIGITS:
+            number = _CN_DIGITS[c]
+        else:
+            unit = {"十": 10, "百": 100, "千": 1000}[c]
+            section += (number or 1) * unit
+            number = 0
+    return total + section + number
+
+
+def chapters_to_text(chapters: list) -> str:
+    """章节数组 → 可读可编辑的一行一章文本(面板展示与手工编辑用)。"""
+    lines = []
+    for c in chapters or []:
+        title = (c.get("title") or "").strip()
+        lines.append(
+            f"第{c.get('number', '?')}章 {title} | 目标:{c.get('goal', '')}"
+            f" | 事件:{c.get('events', '')} | 钩子:{c.get('cliffhanger', '')}")
+    return "\n".join(lines)
+
+
+def chapters_from_text(text: str) -> list:
+    """可编辑文本 → 章节数组(容错:非「第N章」开头的续行并入上一章事件)。"""
+    chapters = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = CHAPTER_LINE_RE.match(line)
+        if m:
+            rest = m.group(2).strip()
+            title, _, tail = rest.partition("|")
+            item = {"number": _chapter_num(m.group(1)), "title": title.strip()[:40],
+                    "goal": "", "events": "", "cliffhanger": ""}
+            chapters.append(item)
+            for seg in tail.split("|"):
+                if ":" in seg:
+                    k, _, v = seg.partition(":")
+                elif "：" in seg:
+                    k, _, v = seg.partition("：")
+                else:
+                    continue
+                key = FIELD_ALIASES.get(k.strip())
+                if key:
+                    item[key] = v.strip()[:500]
+        elif chapters:                       # 续行并入上一章
+            chapters[-1]["events"] = (chapters[-1]["events"] + "\n" + line)[:500]
+    return [c for c in chapters if c.get("goal") or c.get("events") or c.get("title")]
+
+
+def save_chapters(drama_id: int, chapters: list) -> int:
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
+    meta["chapter_count"] = len(chapters)
+    db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(chapters, ensure_ascii=False), json.dumps(meta, ensure_ascii=False),
+           db.now(), drama_id))
+    return len(chapters)
+
+
+def save_characters(drama_id: int, chars: list) -> int:
+    chars = _clean_characters(chars)
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
+    meta["main_characters"] = chars
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+    _sync_characters(drama_id, chars)
+    return len(chars)
 
 
 def write_chapter(episode_id: int, config_id: int | None = None) -> str:
@@ -53,7 +318,7 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
 世界观: {(d['novel_world'] or '')[:600]}
 故事合约: {(d['novel_contract'] or '')[:400]}
 本章计划: 第{ep['episode_number']}章 {plan.get('title','')} — 目标:{plan.get('goal','')} 事件:{plan.get('events','')} 钩子:{plan.get('cliffhanger','')}
-文风: {db.get_setting('novel_style','爽感快节奏网文:短句为主,情绪外露,段落简短,冲突直给,爽点前置')}
+文风: {get_novel_style(ep['drama_id'])}
 目标字数: {ep['target_words'] or 2500}
 上一章结尾(衔接用): {prev_summary}
 

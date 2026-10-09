@@ -450,6 +450,10 @@ class ProjectPage(QWidget):
         self.promo_btn = QPushButton("◈ " + tr("promo_copy"))
         self.promo_btn.clicked.connect(self._promo)
         head.addWidget(self.promo_btn)
+        self.book_btn = QPushButton("▤ " + tr("import_book"))
+        self.book_btn.setToolTip("导入整本 TXT → 结构分析 → 依样仿写(新建项目)")
+        self.book_btn.clicked.connect(self._book_import)
+        head.addWidget(self.book_btn)
         root.addLayout(head)
 
         self.sub = W.muted("")
@@ -514,6 +518,10 @@ class ProjectPage(QWidget):
 
     def _promo(self):
         PromoDialog(self, self.drama_id).exec()
+
+    def _book_import(self):
+        from .book_import_dialog import BookImportDialog
+        BookImportDialog(self, self.drama_id).exec()
 
     def load(self, drama_id: int):
         self.drama_id = drama_id

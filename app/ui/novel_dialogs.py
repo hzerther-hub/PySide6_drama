@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from PySide6.QtWidgets import (QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QTabWidget,
+                               QPlainTextEdit, QPushButton, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ..core import config, db
@@ -46,6 +46,27 @@ class NovelPlanDialog(QDialog):
         meta_row.addWidget(self.genre_edit, 1)
         root.addLayout(meta_row)
 
+        # 全书规模:每章多少字 / 共多少章(AI 生成章节计划与角色时按此执行)
+        nm0 = db.jload(d["novel_meta"], {}) or {}
+        size_row = QHBoxLayout()
+        self.word_spin = QSpinBox()
+        self.word_spin.setRange(500, 20000)
+        self.word_spin.setSingleStep(100)
+        self.word_spin.setValue(int(nm0.get("word_count") or 2500))
+        self.chapter_spin = QSpinBox()
+        self.chapter_spin.setRange(1, 999)
+        self.chapter_spin.setValue(int(nm0.get("chapter_count") or d["total_episodes"] or 60))
+        self.word_spin.valueChanged.connect(self._on_size_changed)
+        self.chapter_spin.valueChanged.connect(self._on_size_changed)
+        size_row.addWidget(QLabel("每章字数"))
+        size_row.addWidget(self.word_spin)
+        size_row.addSpacing(16)
+        size_row.addWidget(QLabel("全书章数"))
+        size_row.addWidget(self.chapter_spin)
+        size_row.addWidget(W.muted("  · 改这里后,「AI 生成章节计划」按新规模重排;已建的集不变"))
+        size_row.addStretch(1)
+        root.addLayout(size_row)
+
         self.cover_lab = QLabel()
         self.cover_lab.setFixedHeight(120)
         self.cover_lab.setAlignment(Qt.AlignCenter)
@@ -77,17 +98,7 @@ class NovelPlanDialog(QDialog):
             lay.addLayout(row)
             lay.addWidget(edit, 1)
             self.tabs.addTab(page, name)
-        ch = QPlainTextEdit()
-        ch.setReadOnly(True)
-        chapters = db.jload(d["novel_chapters"], [])
-        lines = [f"第{c.get('number','?')}章 {c.get('title','')} — 目标:{c.get('goal','')} | 事件:{c.get('events','')} | 钩子:{c.get('cliffhanger','')}"
-                 for c in chapters]
-        ch.setPlainText("\n".join(lines) or "(尚未生成章节计划,可通过「批量写本章及后续」前先运行策划)")
-        self.tabs.addTab(ch, "章节计划")
-        meta = db.jload(d["novel_meta"], {})
-        mc = QPlainTextEdit(json.dumps(meta.get("main_characters", []), ensure_ascii=False, indent=1))
-        mc.setReadOnly(True)
-        self.tabs.addTab(mc, "主要角色")
+        self.tabs.addTab(self._build_plan_tab(d), "章节计划")
         root.addWidget(self.tabs, 1)
 
         bottom = QHBoxLayout()
@@ -100,6 +111,139 @@ class NovelPlanDialog(QDialog):
         bottom.addWidget(save)
         root.addLayout(bottom)
 
+
+    # ── 章节计划 + 主要角色(同一页,各自可 AI 生成)──
+    def _build_plan_tab(self, d) -> QWidget:
+        from ..pipeline import novel as novel_pipe
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 8, 0, 0)
+
+        row = QHBoxLayout()
+        self.chapters_btn = WaitingButton("✨ AI 生成章节计划")
+        self.chapters_btn.clicked.connect(self._ai_chapters)
+        self.chars_btn = WaitingButton("✨ AI 生成主要角色")
+        self.chars_btn.clicked.connect(self._ai_characters)
+        save_btn = QPushButton("保存本章节与角色")
+        save_btn.clicked.connect(self._save_plan_tab)
+        row.addWidget(self.chapters_btn)
+        row.addWidget(self.chars_btn)
+        row.addWidget(save_btn)
+        row.addStretch(1)
+        self.plan_stat = W.muted("")
+        row.addWidget(self.plan_stat)
+        lay.addLayout(row)
+
+        lay.addWidget(W.h2("章节计划"))
+        self.chapters_edit = QPlainTextEdit(novel_pipe.chapters_to_text(db.jload(d["novel_chapters"], [])))
+        self.chapters_edit.setPlaceholderText(
+            "尚未生成章节计划。格式:第1章 标题 | 目标:… | 事件:… | 钩子:…\n"
+            "先在上方填好「每章字数 / 全书章数」,再点 AI 生成。")
+        self.chapters_edit.setMinimumHeight(200)
+        lay.addWidget(self.chapters_edit, 3)
+
+        lay.addWidget(W.h2("主要角色"))
+        nm = db.jload(d["novel_meta"], {}) or {}
+        self.chars_edit = QPlainTextEdit(
+            json.dumps(nm.get("main_characters", []), ensure_ascii=False, indent=1))
+        self.chars_edit.setPlaceholderText('尚未生成角色。JSON 数组:[{"name":"","role":"主角",'
+                                           '"identity":"","motivation":"","appearance":"","styling":""}]')
+        self.chars_edit.setMinimumHeight(140)
+        lay.addWidget(self.chars_edit, 2)
+        self.chapters_edit.textChanged.connect(self._update_plan_stat)
+        self.chars_edit.textChanged.connect(self._update_plan_stat)
+        self._update_plan_stat()
+        return page
+
+    def _update_plan_stat(self):
+        from ..pipeline import novel as novel_pipe
+        if not hasattr(self, "plan_stat"):
+            return
+        chapters = novel_pipe.chapters_from_text(self.chapters_edit.toPlainText())
+        chars = 0
+        try:
+            data = json.loads(self.chars_edit.toPlainText() or "[]")
+            chars = len(data) if isinstance(data, list) else 0
+        except Exception:  # noqa: BLE001
+            chars = -1
+        self.plan_stat.setText(f"共 {len(chapters)} 章 · {chars if chars >= 0 else '角色 JSON 有误'} 个角色")
+
+    def _on_size_changed(self):
+        """规模改动即时落库,保证 AI 任务在后台读到的是用户当前设定。"""
+        nm = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
+                            (self.drama_id,))["novel_meta"], {}) or {}
+        nm["word_count"] = self.word_spin.value()
+        nm["chapter_count"] = self.chapter_spin.value()
+        db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+              (json.dumps(nm, ensure_ascii=False), db.now(), self.drama_id))
+
+    def _ai_chapters(self):
+        from ..core.preflight import ensure_ready
+        from ..pipeline import novel as novel_pipe
+        if not ensure_ready("text", None):
+            return
+        n, words = self.chapter_spin.value(), self.word_spin.value()
+        self._save_project_meta()
+        self._on_size_changed()
+        btn = self.chapters_btn
+        btn.busy(f"生成 {n} 章计划中")
+
+        def job(tid):
+            return novel_pipe.plan_chapters(self.drama_id, chapter_count=n, word_count=words)
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err(error)
+                return
+            self._reload_tabs()
+            ok(f"章节计划已生成:{result['count']} 章 / 每章约 {result['word_count']} 字")
+
+        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+    def _ai_characters(self):
+        """角色依赖章节计划:计划缺失时后台先补计划,再生成角色。"""
+        from ..core.preflight import ensure_ready
+        from ..pipeline import novel as novel_pipe
+        if not ensure_ready("text", None):
+            return
+        d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (self.drama_id,))
+        need_plan = not (db.jload(d["novel_chapters"], []) if d else [])
+        btn = self.chars_btn
+        btn.busy("先生成章节计划…" if need_plan else "生成角色中")
+        self._save_project_meta()
+        self._on_size_changed()
+
+        def job(tid):
+            return novel_pipe.plan_characters(self.drama_id)
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err(error)
+                return
+            self._reload_tabs()
+            ok(f"主要角色已生成:{result['count']} 个(章节计划缺失时已自动补齐)")
+
+        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+    def _save_plan_tab(self):
+        from ..pipeline import novel as novel_pipe
+        try:
+            raw = json.loads(self.chars_edit.toPlainText() or "[]")
+            if not isinstance(raw, list):
+                raise ValueError("主要角色需要是 JSON 数组")
+        except Exception as exc:  # noqa: BLE001
+            err(f"主要角色 JSON 有误:{exc}")
+            return
+        chapters = novel_pipe.chapters_from_text(self.chapters_edit.toPlainText())
+        if not chapters and self.chapters_edit.toPlainText().strip():
+            err("章节计划无法解析,请按「第N章 标题 | 目标:… | 事件:… | 钩子:…」格式填写")
+            return
+        novel_pipe.save_chapters(self.drama_id, chapters)
+        n_char = novel_pipe.save_characters(self.drama_id, raw)
+        self._update_plan_stat()
+        ok(f"已保存:{len(chapters)} 章计划 · {n_char} 个角色(角色已同步到资产库)")
 
     # ── AI 起草(对齐原版 draftNovelSection)──
     SECTION_CN = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
@@ -160,10 +304,27 @@ class NovelPlanDialog(QDialog):
               (json.dumps(meta, ensure_ascii=False), db.now(), self.drama_id))
 
     def _reload_tabs(self):
-        """AI 起草后从库重载各板块。"""
+        """AI 起草后从库重载各板块 + 章节计划/主要角色。"""
+        from ..pipeline import novel as novel_pipe
         d = db.q1("SELECT * FROM dramas WHERE id=?", (self.drama_id,))
         for key, (field, _) in self.SECTION_MAP.items():
             self.edits[key].setPlainText(d[field] or "")
+        nm = db.jload(d["novel_meta"], {}) or {}
+        if hasattr(self, "chapters_edit"):
+            self.chars_edit.blockSignals(True)
+            self.chapters_edit.blockSignals(True)
+            self.word_spin.blockSignals(True)
+            self.chapter_spin.blockSignals(True)
+            self.chapters_edit.setPlainText(novel_pipe.chapters_to_text(db.jload(d["novel_chapters"], [])))
+            self.chars_edit.setPlainText(
+                json.dumps(nm.get("main_characters", []), ensure_ascii=False, indent=1))
+            self.word_spin.setValue(int(nm.get("word_count") or 2500))
+            self.chapter_spin.setValue(int(nm.get("chapter_count") or d["total_episodes"] or 60))
+            self.chars_edit.blockSignals(False)
+            self.chapters_edit.blockSignals(False)
+            self.word_spin.blockSignals(False)
+            self.chapter_spin.blockSignals(False)
+            self._update_plan_stat()
 
     def _save(self):
         from ..pipeline import novel as novel_pipe

@@ -279,3 +279,113 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
     out = out or (config.STATIC_DIR / "merged" / f"clone_{drama_id}_{uuid.uuid4().hex[:8]}.mp4")
     path, _channel = merge_mod.auto_merge(files, out, progress=progress)
     return path
+
+
+# ═══ 升级:整段视频直传多模态理解(对齐原版 aedab02 / 7ae518c)═══
+# 原版不再抽 8 帧,而是把整段 mp4 转 base64 data URL 内联给多模态模型,
+# 模型直接给出按原片节奏的 duration / action_steps / dialogue / sound,
+# 再替换式写回本集分镜(参考视频是唯一事实来源)。
+
+MAX_DURATION_S = 120
+MAX_SIZE_MB = 38
+
+UNDERSTAND_PROMPT = """这是一条参考短视频。请逐镜头分析并输出分镜表 JSON,要求:
+1. 结构照搬原片的镜头切点,覆盖整条视频,不遗漏开头结尾;
+2. 每个镜头输出:index(从1递增)、duration(秒数,按原片节奏估)、title(4-10字镜头名)、
+shot_type(景别:近景/中景/全景/特写)、camera(运镜)、action_steps(连续动作时序数组,每步一句可见的动作描述)、
+dialogue(台词数组,格式"说话人:内容",无则空数组)、sound(环境音/音效描述)。
+3. 只输出 JSON:{"shots":[…]},不要解释。"""
+
+
+def probe_video(path) -> dict:
+    """ffprobe 探测时长/体积。"""
+    ff = config.find_ffprobe()
+    dur = 0.0
+    if ff and Path(path).exists():
+        try:
+            r = subprocess.run([ff, "-v", "error", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", str(path)],
+                               capture_output=True, text=True, timeout=30)
+            dur = float((r.stdout or "0").strip() or 0)
+        except Exception:  # noqa: BLE001
+            dur = 0.0
+    size_mb = (Path(path).stat().st_size / 1048576) if Path(path).exists() else 0.0
+    return {"duration": dur, "size_mb": size_mb}
+
+
+def transcode_if_needed(path, episode_id: int):
+    """超时长(>120s)或超体积(>38MB)先转码(原版同参数:scale=-2:720 -t 120 crf 28)。"""
+    info = probe_video(path)
+    if info["duration"] <= MAX_DURATION_S and info["size_mb"] <= MAX_SIZE_MB:
+        return Path(path), False
+    ff = config.find_ffmpeg()
+    if not ff:
+        return Path(path), False
+    out_dir = config.STATIC_DIR / "temp"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"clone-{episode_id}-{uuid.uuid4().hex[:8]}.mp4"
+    subprocess.run([ff, "-y", "-i", str(path), "-vf", "scale=-2:720", "-t", "120",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                    "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)],
+                   capture_output=True, timeout=900)
+    return out, True
+
+
+def _inline_video(path: Path) -> str:
+    """整段视频转 data URL 内联(多模态模型直读,免抽帧丢时序)。"""
+    return "data:video/mp4;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def understand_video(episode_id: int, video_url: str, config_id=None) -> int:
+    """整段视频直传理解 → 替换式写回本集分镜,返回分镜数。"""
+    src = (config.media_url_to_path(video_url)
+           if str(video_url).startswith(("/static/", "static/")) else Path(video_url))
+    if not src.exists():
+        raise RuntimeError("参考视频文件不存在")
+    work, _t = transcode_if_needed(src, episode_id)
+    from ..agents import runner
+    prompt = UNDERSTAND_PROMPT + "\n\n参考视频(base64 内联,直接读取):"
+    raw = runner.run_agent("storyboard_breaker", prompt, temperature=0.3,
+                           config_id=config_id, image_urls=[_inline_video(work)])
+    data = runner.extract_json(raw) or {}
+    shots = data.get("shots") if isinstance(data, dict) else None
+    if not shots:
+        raise RuntimeError("视频理解未产出任何分镜,请重试")
+    return replace_storyboards_from_shots(episode_id, shots)
+
+
+def replace_storyboards_from_shots(episode_id: int, shots) -> int:
+    """替换式写回本集分镜(参考视频是唯一事实来源:先清子表关联再删旧,再逐条 insert)。"""
+    ts = db.now()
+    for o in db.q("SELECT id FROM storyboards WHERE episode_id=?", (episode_id,)):
+        db.ex("DELETE FROM storyboard_characters WHERE storyboard_id=?", (o["id"],))
+        db.ex("DELETE FROM storyboard_props WHERE storyboard_id=?", (o["id"],))
+    db.ex("DELETE FROM storyboards WHERE episode_id=?", (episode_id,))
+    num = 0
+    for shot in shots:
+        num += 1
+        actions = [str(x) for x in (shot.get("action_steps") or []) if str(x)]
+        dialogue = [str(x) for x in (shot.get("dialogue") or []) if str(x)]
+        desc = "\n".join(x for x in [
+            ("动作:" + "；".join(actions)) if actions else "",
+            ("台词:" + " / ".join(dialogue)) if dialogue else "",
+        ] if x)
+        video_prompt = "。".join(x for x in [
+            str(shot.get("shot_type") or ""),
+            str(shot.get("camera") or ""),
+            "，".join(actions),
+            ("台词(口型同步):" + " / ".join(dialogue)) if dialogue else "",
+        ] if x)
+        try:
+            dur = int(round(float(shot.get("duration") or 5)))
+        except (TypeError, ValueError):
+            dur = 5
+        db.ex("""INSERT INTO storyboards(episode_id,storyboard_number,title,shot_type,movement,
+                  description,video_prompt,atmosphere,duration,status,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (episode_id, num, str(shot.get("title") or f"镜头{num}")[:60],
+               str(shot.get("shot_type") or "")[:40] or None,
+               str(shot.get("camera") or "")[:40] or None,
+               desc, video_prompt, str(shot.get("sound") or "")[:200] or None,
+               min(30, max(2, dur)), "pending", ts, ts))
+    return num

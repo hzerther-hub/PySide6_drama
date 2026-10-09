@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QHBox
 from ..core import config, db
 from ..core.i18n import LANGS, tr
 from . import widgets as W
+from .braille import WaitingButton
+from .toast import err, ok
 
 ASPECTS = [("16:9", "16:9 · 横屏"), ("9:16", "9:16 · 竖屏"), ("1:1", "1:1 · 方形"), ("adaptive", "自适应")]
 ETHNICITIES = [("auto", "智能匹配"), ("east_asian", "东亚"), ("middle_eastern", "中东"),
@@ -43,6 +45,46 @@ class ProjectSettingsDialog(QDialog):
         self.genre = QLineEdit(meta.get("genre", ""))
         self.genre.setPlaceholderText("题材,如 都市情感 / 仙侠")
         f.addRow("题材", self.genre)
+        # AI 起草简介/题材:素材优先级 = 首章正文 > 创意描述 > 项目名
+        meta_row = QWidget()
+        mr = QHBoxLayout(meta_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        self.meta_btn = WaitingButton("✨ AI 起草简介 / 题材")
+        self.meta_btn.setToolTip("按「首章正文 → 创意描述 → 项目名称」的优先级取材,自动填简介与题材")
+        self.meta_btn.clicked.connect(self._draft_meta)
+        mr.addWidget(self.meta_btn)
+        mr.addWidget(_muted("简介与题材会作为小说策划 / 分镜 / 画面生成的上下文"))
+        mr.addStretch(1)
+        f.addRow("", meta_row)
+        # 写法文风:6 个预设 + 自定义(对齐原版 episode.vue 的 NOVEL_STYLES)
+        from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
+        style_row = QWidget()
+        sr = QVBoxLayout(style_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(4)
+        sr1 = QHBoxLayout()
+        self.novel_style = QComboBox()
+        self.novel_style.addItem("未选(跟随默认)", "")
+        for name, prompt in NOVEL_STYLES:
+            self.novel_style.addItem(name, prompt)
+        self.novel_style.addItem("自定义…", NOVEL_STYLE_CUSTOM)
+        _cur = (d["novel_style"] or "").strip()
+        _si = self.novel_style.findData(_cur) if _cur else 0
+        if _si < 0:
+            _si = self.novel_style.findData(NOVEL_STYLE_CUSTOM)
+        self.novel_style.setCurrentIndex(_si)
+        self.novel_style.currentIndexChanged.connect(self._on_style_pick)
+        sr1.addWidget(self.novel_style, 1)
+        sr.addLayout(sr1)
+        self.novel_style_edit = QPlainTextEdit(_cur)
+        self.novel_style_edit.setPlaceholderText("自定义文风:写清句式、节奏、视角与爽点节奏")
+        self.novel_style_edit.setMaximumHeight(64)
+        self.novel_style_edit.setVisible(
+            self.novel_style.currentData() == NOVEL_STYLE_CUSTOM)
+        self.novel_style_edit.textChanged.connect(self._on_style_text)
+        sr.addWidget(self.novel_style_edit)
+        f.addRow("写法文风", style_row)
+        f.addRow("", _muted("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述"))
         self.aspect = QComboBox()
         for v, label in ASPECTS:
             self.aspect.addItem(label, v)
@@ -104,20 +146,82 @@ class ProjectSettingsDialog(QDialog):
         row.addWidget(save)
         root.addLayout(row)
 
+    def _on_style_pick(self):
+        """选预设 → 填进自定义框(留作展示)并隐藏;选「自定义…」→ 展开编辑框。"""
+        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
+        data = self.novel_style.currentData()
+        custom = data == NOVEL_STYLE_CUSTOM
+        self.novel_style_edit.setVisible(custom)
+        if not custom:
+            self.novel_style_edit.blockSignals(True)
+            self.novel_style_edit.setPlainText(data or "")
+            self.novel_style_edit.blockSignals(False)
+        elif not self.novel_style_edit.toPlainText().strip():
+            self.novel_style_edit.setFocus()
+
+    def _on_style_text(self):
+        """自定义文风编辑:只要内容与某个预设不同,下拉就停在「自定义…」。"""
+        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
+        text = self.novel_style_edit.toPlainText().strip()
+        if text and self.novel_style.findData(text) < 0:
+            i = self.novel_style.findData(NOVEL_STYLE_CUSTOM)
+            if i >= 0 and self.novel_style.currentIndex() != i:
+                self.novel_style.blockSignals(True)
+                self.novel_style.setCurrentIndex(i)
+                self.novel_style.blockSignals(False)
+        self.novel_style_edit.setVisible(True)
+
+    def _draft_meta(self):
+        """AI 起草简介与题材(不直接落库,填进输入框由用户确认后保存)。"""
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("text", None):
+            return
+        btn = self.meta_btn
+        btn.busy("起草中")
+
+        def job(tid):
+            from ..pipeline import book_import
+            return book_import.generate_book_meta(
+                self.drama_id,
+                title=self.title.text().strip(),
+                creative=self.creative.toPlainText().strip())
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err(error)
+                return
+            if not result:
+                err("AI 未返回内容,请重试")
+                return
+            if result.get("description"):
+                self.intro.setText(str(result["description"]).strip())
+            if result.get("genre"):
+                self.genre.setText(str(result["genre"]).strip())
+            ok("已填入简介与题材,确认无误后点保存")
+
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
     def _save(self):
+        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
         d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
         meta = db.jload(d["metadata"], {}) if d else {}
         meta["intro"] = self.intro.text().strip()
         meta["genre"] = self.genre.text().strip()
+        style_data = self.novel_style.currentData()
+        novel_style = (self.novel_style_edit.toPlainText().strip()
+                       if style_data == NOVEL_STYLE_CUSTOM else (style_data or ""))
         db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
-               creative_description=?, skip_creative=?, total_episodes=?, language=?, updated_at=? WHERE id=?""",
+               creative_description=?, skip_creative=?, total_episodes=?, language=?,
+               novel_style=?, updated_at=? WHERE id=?""",
               (self.title.text().strip() or "未命名", self.aspect.currentData(),
                self.style.currentData(), self.ethnicity.currentData(),
                json.dumps(meta, ensure_ascii=False),
                None if self.skip_creative.isChecked() else self.creative.toPlainText().strip(),
                1 if self.skip_creative.isChecked() else 0,
                self.total_eps.value(), self.language.currentData(),
-               db.now(), self.drama_id))
+               novel_style, db.now(), self.drama_id))
         self.accept()
 
 
