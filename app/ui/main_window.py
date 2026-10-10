@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,QComboBox, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
 
 from ..core import config, db
-from ..core.i18n import LANGS, set_language, tr
+from ..core.i18n import LANGS, on_change, set_language, tr
+from .toast import err, ok
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
 from .episode_page import EpisodePage
@@ -150,6 +151,8 @@ class MainWindow(QMainWindow):
         self.clone_page.back_requested.connect(self._back_to_projects)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
+        # 语言切换即时重建界面(机制同 comPySide),不再要求重启
+        on_change(self._on_lang_changed)
 
     def set_busy(self, on: bool, message: str = ""):
         """全局盲文等待态(D 类):任何 AI 任务在跑时顶栏显示点字变化,避免"点了没反应"。"""
@@ -162,6 +165,64 @@ class MainWindow(QMainWindow):
             self.busy_spin.stop()
             self.busy_bar.stop()
             self.status.showMessage("")
+
+    def _on_lang_changed(self, _code: str):
+        """语言切换回调。
+
+        必须延到下一个事件循环再重建:若在按钮 clicked 里同步重建,会把正在派发信号的
+        那个按钮一起销毁,Qt 会卡在派发里出不来(comPySide 踩过这个坑)。
+        """
+        QTimer.singleShot(0, self._rebuild_ui)
+
+    def _rebuild_ui(self):
+        """按当前语言重建当前页面。所有文案都是构造时 tr() 求值的,只能重建。"""
+        from .project_page import ProjectPage
+        from .projects_page import ProjectsPage
+        from .episode_page import EpisodePage
+        idx = self.stack.currentIndex()
+        state = {"drama_id": getattr(self, "_cur_drama_id", 0),
+                 "episode_id": getattr(self, "_cur_episode_id", 0)}
+        kinds = ["projects", "project", "episode", "clone", "face_swap", "merger"]
+        kind = kinds[idx] if 0 <= idx < len(kinds) else "projects"
+        old = self.stack.currentWidget()
+        try:
+            if kind == "projects":
+                new = ProjectsPage()
+                new.open_drama.connect(self._open_drama)
+                new.set_new_callback(self._new_project)
+            elif kind == "project" and state["drama_id"]:
+                new = ProjectPage()
+                new.enter_episode.connect(self._enter_episode)
+                new.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
+                new.load(state["drama_id"])
+            elif kind == "episode" and state["drama_id"]:
+                new = EpisodePage()
+                new.back_requested.connect(self._back_to_project)
+                new.load(state["drama_id"], state["episode_id"])
+            else:
+                new = old            # 工具页文案少,原地刷新即可
+        except Exception as exc:  # noqa: BLE001 —— 重建失败保留旧页,不把窗口搞没
+            import traceback
+            traceback.print_exc()
+            err(f"界面重建失败:{str(exc)[:120]}")
+            return
+        if new is old:
+            self.retranslate()
+            return
+        if kind in ("projects",):
+            self.projects_page = new
+        elif kind == "project":
+            self.project_page = new
+        elif kind == "episode":
+            self.episode_page = new
+        # QStackedWidget 没有 replaceWidget:先摘旧的再插到同一位
+        self.stack.removeWidget(old)
+        self.stack.insertWidget(idx, new)
+        old.deleteLater()
+        new.show()
+        self.stack.setCurrentWidget(new)
+        self.retranslate()
+        ok(tr("language_switched"))
 
     def retranslate(self):
         """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""
@@ -245,6 +306,7 @@ class MainWindow(QMainWindow):
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
         if not d:
             return
+        self._cur_drama_id = drama_id
         if d["work_type"] == "video_clone":
             self.clone_page.load(drama_id)
             self.stack.setCurrentWidget(self.clone_page)
@@ -261,6 +323,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.project_page)
 
     def _enter_episode(self, drama_id: int, episode_id: int):
+        self._cur_drama_id, self._cur_episode_id = drama_id, episode_id
         self.episode_page.load(drama_id, episode_id)
         self.stack.setCurrentWidget(self.episode_page)
 
@@ -291,7 +354,7 @@ class MainWindow(QMainWindow):
             lang = lw.currentItem().data(Qt.UserRole)
             db.set_setting("ui_language", lang)
             db.set_setting("content_language", lang)
-            QMessageBox.information(self, tr("ui_language"), "✅ 请重启应用生效 / Please restart the app.")
+            set_language(lang)          # 触发监听器 → 界面即时重建,不需要重启
 
     def _toggle_theme(self):
         cur = db.get_setting("theme", "light")

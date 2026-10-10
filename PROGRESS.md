@@ -962,3 +962,33 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
 
 **验证**:解析到 `Microsoft YaHei UI`;下拉 18 项;切换后应用字体立即变更;
 亮/暗 × 2 项目 × 3 导航页 × 策划弹窗 / 项目设置 全绿。
+
+## 2026-10-09(第 38 轮:语言切换即时生效,不再要求重启)
+> 用户:「切换语言为什么要重启才行?」「而这一个项目切换语言不用重启 E:\comPySide」
+### 为什么以前要重启
+所有文案都在**控件构造时**调一次 `tr()` 求值。切语言只走了 `retranslate()`,而它只覆盖顶栏导航
+与窗口标题;页面内容永远是构建时的语言。参考项目那边是 Vue 响应式重渲染,所以能即时生效。
+
+### 移植 comPySide 的机制
+`E:\comPySide\src\compositor\i18n.py` + `app.py` 的做法:**监听器列表 + 整体重建界面**。
+- `i18n.py`:新增 `_LISTENERS` / `on_change(fn)`,`set_language()` 在语言真的变了时通知所有监听器
+  (单个监听器抛错不阻断其它);
+- `main_window`:注册 `on_change(self._on_lang_changed)`;回调里用 `QTimer.singleShot(0, …)` 延到
+  下一个事件循环再 `_rebuild_ui()` —— **必须延后**,否则会在按钮 clicked 派发中把正在派发信号的
+  按钮一起销毁,Qt 卡在派发里出不来(comPySide 注释里记了这个坑);
+- `_rebuild_ui()`:按当前栈页重建对应页面(ProjectsPage / ProjectPage / EpisodePage),
+  用 `removeWidget` + `insertWidget(idx, …)` 就地替换(记录 `_cur_drama_id` / `_cur_episode_id` 以恢复);
+  重建失败保留旧页并提示,绝不把窗口搞没;
+- `_switch_language()` 去掉「请重启应用生效」弹窗,改为 `set_language()` 即时生效。
+
+### 顺带修:模块级 `tr()` 会把语言定死
+`projects_page.WT_LABEL` 是模块级字典,import 时求值一次,切语言后卡片上的创作目标标签永远不变。
+改成 `wt_label()` 函数按需查(该项目卡片标签现已能跟随语言切换)。
+
+### 实测:切换即时生效,但仍有覆盖缺口
+中 → 英 → 日 往返重建全部通过,窗口标题、导航、卡片标签都跟着变。
+但**页面里仍有一部分中文** —— 这不是切换机制的问题,是翻译覆盖问题:
+`T['en']` 里 **161/357 条的值就是中文原文**(当初生成英文表时未翻译的直接照抄),
+其中已由补充词典 `ui_strings.S` 覆盖 122 条,剩下的仍回落中文。
+实测各语言回落中文的键数:英文 153、日文 208、韩文 149、法文 149。
+这正是批次 2(i18n 15 语言全覆盖)要解决的。

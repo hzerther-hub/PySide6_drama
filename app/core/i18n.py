@@ -468,9 +468,28 @@ T["th"] = _t(T["en"], nav_projects="โปรเจกต์", nav_settings="ต
  merge_now="รวมเลย", movie_quality="คุณภาพระดับภาพยนตร์",
 )
 
+_LISTENERS: list = []
+
+
+def on_change(fn) -> None:
+    """注册语言切换回调(UI 借此即时重建,不必重启)。
+
+    机制借鉴 comPySide 项目:切语言 → 通知监听器 → 主窗整体重建界面。
+    """
+    _LISTENERS.append(fn)
+
+
 def set_language(lang: str) -> None:
     global _current
-    _current = lang if lang in T else "zh"
+    lang = lang if lang in T else "zh"
+    changed = lang != _current
+    _current = lang
+    if changed:
+        for fn in list(_LISTENERS):
+            try:
+                fn(lang)
+            except Exception:  # noqa: BLE001 —— 单个监听器出错不阻断其它
+                pass
 
 
 def current_language() -> str:

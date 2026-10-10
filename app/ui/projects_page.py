@@ -14,9 +14,13 @@ from ..core.i18n import tr
 from . import widgets as W
 from .toast import ok
 
-WT_LABEL = {"novel": tr("wt_novel"), "drama": tr("wt_drama"),
-            "comic": tr("wt_comic"), "promotion": tr("wt_promotion"),
-            "video_clone": tr("wt_clone")}
+# 模块级求值 tr() 会在 import 时定死语言,切语言后不跟着变 → 改成函数按需查
+WT_KEYS = {"novel": "wt_novel", "drama": "wt_drama", "comic": "wt_comic",
+           "promotion": "wt_promotion", "video_clone": "wt_clone"}
+
+
+def wt_label(work_type: str) -> str:
+    return tr(WT_KEYS.get(work_type, work_type))
 
 # 状态色固定;标签走 i18n 词典(不能在导入时求值,否则切语言不生效)
 STATUS_META = {"pending": "#86909c", "active": "#16a34a", "completed": "#f97316"}
@@ -153,7 +157,7 @@ class ProjectCard(QFrame):
         bl.addWidget(title)
         chips = QHBoxLayout()
         chips.setSpacing(6)
-        chips.addWidget(W.tag(WT_LABEL.get(drama["work_type"], drama["work_type"])))
+        chips.addWidget(W.tag(wt_label(drama["work_type"])))
         nm = db.jload(drama["novel_meta"], {}) or {}
         if (nm.get("imitated_from") or {}).get("drama_id"):
             imi = W.tag(tr("imitated"))
