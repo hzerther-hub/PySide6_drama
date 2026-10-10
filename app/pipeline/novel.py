@@ -118,38 +118,57 @@ SEGMENT_PLAN_PROMPT = """你是小说策划。{count} 章的长篇不适合逐�
 其中 chapters 只给每段前 3 章的示例细节(共 {samples} 条),用于校准颗粒度;每章字数 {words} 字。"""
 
 
-def plan_chapters(drama_id: int, chapter_count: int | None = None,
-                  word_count: int | None = None, config_id: int | None = None) -> dict:
-    """AI 生成逐章计划(章节数/每章字数由用户在策划面板指定),落 novel_chapters。"""
+def _plan_scale(drama_id: int, chapter_count: int | None, word_count: int | None) -> tuple[int, int]:
     nm = db.jload((db.q1("SELECT novel_meta,total_episodes FROM dramas WHERE id=?", (drama_id,))
                    or {"novel_meta": None, "total_episodes": None})["novel_meta"], {}) or {}
     n = int(chapter_count or nm.get("chapter_count") or db.q1(
         "SELECT total_episodes FROM dramas WHERE id=?", (drama_id,))["total_episodes"] or 60)
     words = int(word_count or nm.get("word_count") or 2500)
-    n = max(1, min(999, n))
+    return max(1, min(999, n)), words
+
+
+def chapters_prompt(drama_id: int, chapter_count: int | None = None,
+                    word_count: int | None = None) -> str:
+    """构造章节计划提示词(与 persist_chapters 配对,便于流式边收边显示)。"""
+    n, words = _plan_scale(drama_id, chapter_count, word_count)
     ctx = _novel_settings_ctx(drama_id)
     if n <= CHAPTER_PLAN_LIMIT:
-        raw = runner.run_agent("novel_planner",
-                               f"{ctx}\n\n{CHAPTER_PLAN_PROMPT.format(count=n, words=words)}",
-                               temperature=0.4, config_id=config_id)
-        chapters = _clean_chapter_list((runner.extract_json(raw) or {}).get("chapters"), n)
-    else:
-        segs = (n + 19) // 20
-        raw = runner.run_agent("novel_planner",
-                               f"{ctx}\n\n" + SEGMENT_PLAN_PROMPT.format(
-                                   count=n, segments=segs, samples=segs * 3, words=words),
-                               temperature=0.4, config_id=config_id)
-        data = runner.extract_json(raw) or {}
-        chapters = _clean_chapter_list(data.get("chapters"), n, allow_sparse=True)
+        return f"{ctx}\n\n{CHAPTER_PLAN_PROMPT.format(count=n, words=words)}"
+    segs = (n + 19) // 20
+    return f"{ctx}\n\n" + SEGMENT_PLAN_PROMPT.format(count=n, segments=segs,
+                                                          samples=segs * 3, words=words)
+
+
+def persist_chapters(drama_id: int, raw: str, chapter_count: int | None = None,
+                     word_count: int | None = None) -> dict:
+    """解析并落库章节计划;返回 {count, word_count}。"""
+    n, words = _plan_scale(drama_id, chapter_count, word_count)
+    raw = _strip_tool_calls(raw or "").strip()
+    if not raw:
+        raise RuntimeError("章节计划返回空内容")
+    data = runner.extract_json(raw) or {}
+    chapters = _clean_chapter_list(data.get("chapters"), n,
+                                   allow_sparse=(n > CHAPTER_PLAN_LIMIT))
     if not chapters:
-        raise RuntimeError("AI 未返回章节计划,请重试或检查文本模型配置")
-    meta = nm
-    meta["chapter_count"] = n
-    meta["word_count"] = words
+        raise RuntimeError(f"未解析出章节计划(前 120 字:{raw[:120]})")
+    nm = db.jload((db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+                   or {"novel_meta": None})["novel_meta"], {}) or {}
+    nm["chapter_count"] = n
+    nm["word_count"] = words
     db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
-          (json.dumps(chapters, ensure_ascii=False), json.dumps(meta, ensure_ascii=False),
+          (json.dumps(chapters, ensure_ascii=False), json.dumps(nm, ensure_ascii=False),
            n, db.now(), drama_id))
-    return {"chapters": chapters, "count": len(chapters), "word_count": words}
+    return {"count": len(chapters), "word_count": words, "chapters": chapters}
+
+
+def plan_chapters(drama_id: int, chapter_count: int | None = None,
+                  word_count: int | None = None, config_id: int | None = None) -> dict:
+    """一次性生成并落库逐章计划(非流式路径;UI 走 chapters_prompt + persist_chapters)。"""
+    raw = runner.run_agent("novel_planner", chapters_prompt(drama_id, chapter_count, word_count),
+                           temperature=0.4, config_id=config_id,
+                           system=_draft_system("章节计划"))
+    out = persist_chapters(drama_id, raw, chapter_count, word_count)
+    return {"chapters": out["chapters"], "count": out["count"], "word_count": out["word_count"]}
 
 
 def _clean_chapter_list(raw, expected: int, allow_sparse: bool = False) -> list:
@@ -737,18 +756,8 @@ SECTION_SPEC: dict[str, dict] = {
 }
 
 
-def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict:
-    """AI 起草某个策划板块并**直接落库**。
-
-    与参考项目的差别要说清楚:那边的 novel_planner 是带工具的 Mastra Agent,
-    提示词写「完成后调用 save_novel_settings 保存」,工具会真的写库;本仓的 runner
-    是单次调用、没有工具,照抄这句会让模型返回 `<tool_call>` 文本,什么都不会发生
-    (实测总纲起草返回的是 read_novel_context 的工具调用片段)。
-
-    所以这里把两件事自己做掉:
-      1. 上下文**直接内联**进提示词(替代 read_novel_context 工具);
-      2. 模型**直接返回内容**,由本函数解析并写库(替代 save_novel_settings 工具)。
-    """
+def draft_prompt(drama_id: int, key: str) -> str:
+    """构造起草提示词(与 persist_draft 配对,便于流式边收边显示)。"""
     spec = SECTION_SPEC.get(key)
     if not spec:
         raise RuntimeError(f"未知板块:{key}")
@@ -756,7 +765,7 @@ def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict
     d = db.q1("SELECT total_episodes, novel_chapters FROM dramas WHERE id=?", (drama_id,))
     chapters = db.jload(d["novel_chapters"], []) or []
     intended = len(chapters) or int(d["total_episodes"] or 0)
-    prompt = f"""请为下面这本书起草「{spec['name']}」。
+    return f"""请为下面这本书起草「{spec['name']}」。
 
 【项目上下文】
 {ctx}
@@ -767,14 +776,45 @@ def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict
 {spec['spec']}
 
 只输出这一份内容本身,不要任何前后说明。"""
-    raw = runner.run_agent("novel_planner", prompt, temperature=0.6, config_id=config_id,
-                           system=_draft_system(spec["name"]))
+
+
+# 模型有时把「我要怎么回答」这类元思考写进 content 通道,直接落库会变成一堆任务复述。
+# 这些开头是特征词 —— 命中即判定为「没真出稿」,触发一次更严格的补发。
+META_TALK = re.compile(
+    r"^(我们需要|我需要|用户(要求|说|希望)|需要(直接|只|确保|先)|先(回答|分析|梳理)|"
+    r"根据(用户|要求|输出格式)|输出格式(是|为)|只需输出|本次(只|要)|"
+    r"(Let me|I need|We need|The user))")
+META_TALK_ANY = re.compile(
+    r"(只需要输出|请只输出|输出格式|user.*request|需要调用工具|必须先调用工具)")
+
+
+def looks_like_meta_talk(text: str) -> bool:
+    """判断内容是不是「在讲怎么回答」而不是「答案本身」。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if len(t) < 80 and (META_TALK.match(t) or META_TALK_ANY.search(t)):
+        return True
+    if META_TALK.match(t):
+        return True
+    return False
+
+
+def persist_draft(drama_id: int, key: str, raw: str) -> dict:
+    """解析并落库一次起草结果;返回 {key, field, text, extra}。"""
+    spec = SECTION_SPEC.get(key)
+    if not spec:
+        raise RuntimeError(f"未知板块:{key}")
     raw = _strip_tool_calls(raw or "").strip()
     if not raw:
         raise RuntimeError(f"{spec['name']}起草返回空内容")
     text, structured = _parse_draft(raw, spec)
     if not text:
         raise RuntimeError(f"{spec['name']}起草结果无法解析(原始输出前 120 字:{raw[:120]})")
+    if looks_like_meta_talk(text):
+        raise RuntimeError(f"{spec['name']}这次只返回了过程说明,没有实际内容(前 80 字:{text[:80]})")
+    if key == "volume" and not structured:      # 分卷战略必须要卷/章结构,纯散文不算数
+        raise RuntimeError(f"{spec['name']}没有返回分卷结构(前 80 字:{text[:80]})")
     ts = db.now()
     extra = ""
     if key == "volume" and structured:
@@ -793,6 +833,21 @@ def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict
               (json.dumps(meta, ensure_ascii=False), ts, drama_id))
         extra = ",已写入结构化字段(写作门控会读)"
     return {"key": key, "field": spec["field"], "text": text, "extra": extra}
+
+
+def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict:
+    """一次性起草并落库(非流式路径;UI 走 draft_prompt + persist_draft 以便流式显示)。
+
+    与参考项目的差别:那边的 novel_planner 是带工具的 Mastra Agent,提示词写
+    「完成后调用 save_novel_settings 保存」,工具会真的写库;本仓 runner 是单次调用、
+    没有工具,照抄这句会让模型返回工具调用文本,什么都不会发生(实测总纲起草返回的就是它)。
+    所以这里把两件事自己做掉:上下文**直接内联**进提示词(替代 read_novel_context),
+    模型**直接返回内容**由本函数写库(替代 save_novel_settings)。
+    """
+    raw = runner.run_agent("novel_planner", draft_prompt(drama_id, key),
+                           temperature=0.6, config_id=config_id,
+                           system=_draft_system(SECTION_SPEC[key]["name"]))
+    return persist_draft(drama_id, key, raw)
 
 
 def _parse_draft(raw: str, spec: dict) -> tuple[str, object]:

@@ -52,7 +52,7 @@ _NEG_UNSUPPORTED = ("negative_prompt is not supported",
                     "unsupported parameter: negative_prompt")
 
 
-def _strip_negative(body: dict):
+def _strip_negative(body: dict) -> bool:
     """从请求体剥离 negative_prompt(顶层 / extra_body / 深层扫描),返回是否剥掉了。"""
     removed = False
     if body.pop("negative_prompt", None) is not None:
@@ -67,13 +67,33 @@ def _strip_negative(body: dict):
     return removed
 
 
-def _raise_or_strip_negative(resp, negative: str | None, prefix: str = "生图失败"):
-    """上游不支持 negative_prompt 时把原因说清楚(剥离重试由调用方决定)。"""
-    text = resp.text[:400]
-    if negative and any(m in text for m in _NEG_UNSUPPORTED):
-        raise AIError(f"{prefix} HTTP {resp.status_code}:该模型不支持 negative_prompt — "
-                      f"已按平台守卫下发负面词,可改用支持负面词的模型或忽略此提示")
-    raise AIError(f"{prefix} HTTP {resp.status_code}: {text}")
+def _neg_unsupported(resp) -> bool:
+    """上游是否以「不支持 negative_prompt」为由拒绝了请求。"""
+    try:
+        text = resp.text[:500].lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(m in text for m in _NEG_UNSUPPORTED)
+
+
+def _post_with_negative(url: str, body: dict, headers: dict, *, timeout: int,
+                        prefix: str, **post_kw):
+    """提交请求;上游不支持 negative_prompt 时**剥离后自动重试一次**。
+
+    对齐原版 generation.ts 的「negative_prompt is not supported → 去掉重试」:
+    平台质量守卫仍会下发负面词,但模型不吃这个字段时不能因此整次失败。
+    """
+    resp = requests.post(url, json=body, headers=headers, timeout=timeout, **post_kw)
+    if resp.status_code >= 400 and _neg_unsupported(resp):
+        if _strip_negative(body):
+            resp = requests.post(url, json=body, headers=headers, timeout=timeout, **post_kw)
+            if resp.status_code < 400:
+                return resp
+            text = resp.text[:400]
+            raise AIError(f"{prefix} HTTP {resp.status_code}(已去掉负面词仍失败): {text}")
+        text = resp.text[:400]
+        raise AIError(f"{prefix} HTTP {resp.status_code}: {text}")
+    return resp
 
 
 def generate_image(prompt: str, out_name: str | None = None,
@@ -107,9 +127,9 @@ def generate_image(prompt: str, out_name: str | None = None,
             body["size"] = size
         if negative:
             body["negative_prompt"] = negative
-        resp = requests.post(url, json=body, headers=headers, timeout=300)
+        resp = _post_with_negative(url, body, headers, timeout=300, prefix="生图失败")
         if resp.status_code != 200:
-            _raise_or_strip_negative(resp, negative)
+            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -124,9 +144,9 @@ def generate_image(prompt: str, out_name: str | None = None,
                 "size": size or "2K", "watermark": False}
         if negative:
             body["negative_prompt"] = negative
-        resp = requests.post(url, json=body, headers=headers, timeout=300)
+        resp = _post_with_negative(url, body, headers, timeout=300, prefix="生图失败")
         if resp.status_code != 200:
-            _raise_or_strip_negative(resp, negative)
+            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -146,9 +166,9 @@ def generate_image(prompt: str, out_name: str | None = None,
         refs = [r for r in (_ref_data_url(x) for x in (reference_images or [])[:6]) if r]
         if refs:
             body["extra_body"] = {"image": refs}
-        resp = requests.post(submit, json=body, headers=headers, timeout=120)
+        resp = _post_with_negative(submit, body, headers, timeout=120, prefix="Agnes 提交失败")
         if resp.status_code not in (200, 201):
-            _raise_or_strip_negative(resp, negative, prefix="Agnes 提交失败")
+            raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
         # 兼容同步返回与异步任务两种形态
         if isinstance(data.get("data"), list) and data["data"] and (data["data"][0].get("url") or data["data"][0].get("b64_json")):

@@ -13,7 +13,7 @@ from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
 from .braille import WaitingButton
-from .toast import err, ok
+from .toast import err, ok, warn
 
 
 # 策划板块的生成顺序与前置依赖
@@ -203,8 +203,10 @@ class NovelPlanDialog(QDialog):
               (json.dumps(nm, ensure_ascii=False), db.now(), self.drama_id))
 
     def _ai_chapters(self):
+        """AI 生成章节计划:**流式**显示思考与结果,完成才落库。"""
         from ..core.preflight import ensure_ready
         from ..pipeline import novel as novel_pipe
+        from .streaming import stream_into
         if not ensure_ready("text", None):
             return
         n, words = self.chapter_spin.value(), self.word_spin.value()
@@ -212,19 +214,33 @@ class NovelPlanDialog(QDialog):
         self._on_size_changed()
         btn = self.chapters_btn
         btn.busy(f"生成 {n} 章计划中")
+        self.tabs.setCurrentIndex(self.tabs.count() - 1)     # 章节计划页
+        editor = self.chapters_edit
+        editor.clear()
 
-        def job(tid):
-            return novel_pipe.plan_chapters(self.drama_id, chapter_count=n, word_count=words)
-
-        def done(tid, result, error):
+        def finished(text: str) -> None:
             btn.idle()
-            if error:
-                err(error)
+            try:
+                result = novel_pipe.persist_chapters(self.drama_id, text,
+                                                    chapter_count=n, word_count=words)
+            except Exception as exc:  # noqa: BLE001
+                editor.setPlainText("")
+                err(f"章节计划保存失败:{str(exc)[:160]}")
                 return
             self._reload_tabs()
+            self._update_plan_stat()
             ok(f"章节计划已生成:{result['count']} 章 / 每章约 {result['word_count']} 字")
 
-        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+        def failed(msg: str) -> None:
+            btn.idle()
+            editor.setPlainText("")
+            err(f"章节计划生成失败:{msg[:160]}")
+
+        worker = stream_into(editor, novel_pipe.chapters_prompt(self.drama_id, n, words),
+                             system=novel_pipe._draft_system("章节计划"),
+                             config_id=None, temperature=0.4, json_mode=True,
+                             on_finished=finished, on_failed=failed, owner=self)
+        self._stream_worker = worker
 
     def _ai_characters(self):
         """角色依赖章节计划:计划缺失时后台先补计划,再生成角色。"""
@@ -270,6 +286,17 @@ class NovelPlanDialog(QDialog):
         self._update_plan_stat()
         ok(f"已保存:{len(chapters)} 章计划 · {n_char} 个角色(角色已同步到资产库)")
 
+    def closeEvent(self, ev):
+        """关闭时停掉还在跑的流式线程(QThread 仍在运行时析构会崩)。"""
+        w = getattr(self, "_stream_worker", None)
+        if w is not None and w.isRunning():
+            w.cancel()
+            w.wait(3000)
+        super().closeEvent(ev)
+
+    def reject(self):
+        self.close()
+
     # ── AI 起草(对齐原版 draftNovelSection)──
     SECTION_CN = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
     SECTION_MAP = {"outline": ("novel_outline", "outline"),
@@ -278,8 +305,10 @@ class NovelPlanDialog(QDialog):
                    "volume": ("novel_volume", "volume")}
 
     def _draft_section(self, key: str, name: str):
-        """AI 起草该板块并直接落库(见 novel.draft_section 的说明)。"""
+        """AI 起草该板块:**流式**显示 + 直接落库(见 novel.draft_section 的说明)。"""
         from ..core.preflight import ensure_ready
+        from ..pipeline import novel as novel_pipe
+        from .streaming import stream_into
         if not ensure_ready("text", None):
             return
         miss = missing_prereq(self.drama_id, key)
@@ -291,21 +320,32 @@ class NovelPlanDialog(QDialog):
         btn.busy(f"起草{name}中")
         cid = self.text_combo.currentData() if hasattr(self, "text_combo") else None
         config_id = int(cid) if cid else None
+        editor = self.edits[key]
+        self.tabs.setCurrentWidget(editor.parentWidget().parentWidget())
+        spec = novel_pipe.SECTION_SPEC[key]
+        prompt = novel_pipe.draft_prompt(self.drama_id, key)
 
-        def job(tid):
-            from ..pipeline import novel as novel_pipe
-            return novel_pipe.draft_section(self.drama_id, key, config_id=config_id)
-
-        def done(tid, result, error):
+        def finished(text: str) -> None:
             btn.idle()
-            if error:
-                err(f"{name}起草失败:{str(error)[:160]}")
+            try:
+                result = novel_pipe.persist_draft(self.drama_id, key, text)
+            except Exception as exc:  # noqa: BLE001
+                err(f"{name}保存失败:{str(exc)[:160]}")
                 return
             self._reload_tabs()
             self._update_plan_stat()
-            ok(f"{name}已生成并保存{(result or {}).get('extra', '')}")
+            ok(f"{name}已生成并保存{result.get('extra', '')}")
 
-        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+        def failed(msg: str) -> None:
+            btn.idle()
+            editor.setPlainText("")     # 别把思考过程留在框里冒充结果
+            err(f"{name}起草失败:{msg[:160]}")
+
+        worker = stream_into(editor, prompt, system=novel_pipe._draft_system(spec["name"]),
+                             config_id=config_id, temperature=0.6,
+                             json_mode=(spec["fmt"] == "json"),
+                             on_finished=finished, on_failed=failed, owner=self)
+        self._stream_worker = worker          # 持有引用,防被 GC;关闭对话框时 cancel
 
     def _save_section(self, key: str):
         field, _ = self.SECTION_MAP[key]

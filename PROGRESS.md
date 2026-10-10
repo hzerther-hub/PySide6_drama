@@ -895,3 +895,34 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
 ——**两个不同的字段**,所以第 1 步「项目设定」永远判缺,小说项目将永远无法通过写作闸门。
 已改为读 `metadata`(与 `_novel_settings_ctx` 一致)。修复后项目 1 的闸门从
 「缺 1」变为「齐」。
+
+## 2026-10-09(第 36 轮:AI 生成流式显示 + 思考/正文分离 + 封面修复)
+> 用户:「生成时能不能用流的效果显示」「流式把思考过程打印出来了」「可以打印思考过程。
+> 最后变为结果保存下来」「其它的类似也要进行类似修改」「生成封面没有成功」
+### 1. 流式生成
+- 新增 `ai/text_stream.py`:`chat_stream()` 走 OpenAI 兼容 SSE,逐块 yield;
+  端点不接受 `stream` 时**自动回落成一次性请求**,调用方无需分支
+  (实测当前文本服务 17 块 / 96 字 / 2.1s,流式可用)
+- 新增 `ui/streaming.py`:`StreamWorker`(QThread + 信号跨线程投递)+ `stream_into()`
+  把增量实时写进编辑器并保持滚到底
+- `text_client` 抽出 `_build_body()`,chat 与 chat_stream 共用,避免两处参数漂移
+
+### 2. 思考过程与最终结果分离
+- `chat_stream` 改为 yield `(kind, text)`,kind ∈ {reasoning, content};
+  思考走灰色斜体显示,**`StreamWorker.content` / `finished` 只给正式内容**
+- `novel_dialogs._draft_section` 与 `_ai_chapters` 改走流式:思考实时显示但不落库,
+  失败时清空编辑器(别把思考留在框里冒充结果)
+
+### 3. 结果校验:模型把元思考写进 content 通道
+分卷战略那次「生成完了」其实没生成 —— 模型把
+「我们需要回答用户:只起草分卷战略这一块内容本身…输出格式 JSON…」写进了 content 通道,
+被原样存成了 `novel_volume`。新增 `looks_like_meta_talk()` 识别这类「在讲怎么回答」的文本
+(命中「我们需要/用户要求/需要直接输出/输出格式是」等特征),命中即拒绝并提示重试;
+分卷战略另外强制要求返回分卷结构,纯散文不算数。
+
+### 4. 封面生成失败
+第 29 轮加的平台质量守卫会下发 `negative_prompt`,而 **Agnes 图像模型不支持该字段**,
+返回 400。此前 `_raise_or_strip_negative` 只报错不重试 —— 这正是计划里预判的联动问题。
+已实现 `_post_with_negative()`:上游回「不支持 negative_prompt」时**剥离后自动重试一次**
+(顶层 / extra_body / 深层扫描三处),对齐原版 generation.ts 的做法。三个 provider 分支全部接入。
+实测项目 4 封面生成成功,/static/images/cover_4.png 落盘 1.4MB。

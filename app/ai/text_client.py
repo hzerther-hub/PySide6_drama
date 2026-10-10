@@ -23,15 +23,9 @@ def _needs_json_word(err_text: str) -> bool:
     return "response_format" in t and "json" in t and ("must contain" in t or "invalid_parameter" in t)
 
 
-def chat(prompt: str, system: str | None = None, config_id: int | None = None,
-         temperature: float = 0.7, max_tokens: int = 8192,
-         json_mode: bool = False, timeout: int = 300,
-         image_urls: list[str] | None = None) -> str:
-    cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
-    url = cfg["base_url"].rstrip("/") + "/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if cfg.get("api_key"):
-        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
+                max_tokens: int, json_mode: bool, image_urls: list[str] | None) -> dict:
+    """组装请求体(chat 与 chat_stream 共用,避免两处参数漂移)。"""
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
@@ -57,13 +51,24 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
             pass
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-        # 网关要求 messages 里出现 json 字样才肯用 json_object;被拒就摘掉该参数重发
-        # (runner.run_agent_json 已保证用户消息含该词,这里是兜底)。
-        resp = requests.post(url, json=body, headers=headers, timeout=timeout)
-        if resp.status_code != 200 and _needs_json_word(resp.text):
-            body.pop("response_format", None)
-            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
-    else:
+    return body
+
+
+def chat(prompt: str, system: str | None = None, config_id: int | None = None,
+         temperature: float = 0.7, max_tokens: int = 8192,
+         json_mode: bool = False, timeout: int = 300,
+         image_urls: list[str] | None = None) -> str:
+    cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    body = _build_body(cfg, prompt, system, temperature, max_tokens, json_mode, image_urls)
+    # 网关要求 messages 里出现 json 字样才肯用 json_object;被拒就摘掉该参数重发
+    # (runner.run_agent_json 已保证用户消息含该词,这里是兜底)。
+    resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+    if resp.status_code != 200 and json_mode and _needs_json_word(resp.text):
+        body.pop("response_format", None)
         resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     if resp.status_code != 200:
         raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {resp.text[:400]}")
