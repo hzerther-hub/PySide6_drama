@@ -71,17 +71,27 @@ class StreamWorker(QThread):
             self.failed.emit(str(exc))
 
 
-def _formats(dark: bool) -> tuple[QTextCharFormat, QTextCharFormat]:
-    """(思考格式, 正文格式)。"""
+def _formats(editor) -> tuple[QTextCharFormat, QTextCharFormat]:
+    """(思考格式, 正文格式)。
+
+    **只改颜色,不改字体族。** 曾用 `QFont()` 试图取消斜体,Qt 会把空字体族解析成手写体
+    (script fallback),整段正文变成花体 —— 现在一律从编辑器自身字体派生,只切 italic。
+    """
+    base = editor.font()
     think = QTextCharFormat()
-    think.setForeground(DARK_REASONING if dark else REASONING_COLOR)
-    f = QFont()
-    f.setItalic(True)
-    think.setFont(f)
+    think.setForeground(REASONING_COLOR)                 # 思考用灰色
+    think.setFont(_with_italic(base, True))
     body = QTextCharFormat()
-    body.setForeground(QColor("#e8eaed") if dark else CONTENT_COLOR)
-    body.setFont(QFont())                    # 取消斜体
+    body.setForeground(editor.palette().color(editor.palette().ColorRole.Text))
+    body.setFont(_with_italic(base, False))             # 正文用编辑器本来的字体
     return think, body
+
+
+def _with_italic(font: QFont, italic: bool) -> QFont:
+    f = QFont(font)          # 复制,保留字体族/字号
+    f.setItalic(italic)
+    f.setUnderline(False)
+    return f
 
 
 def stream_into(editor: QPlainTextEdit | QTextEdit, prompt: str, *,
@@ -99,10 +109,9 @@ def stream_into(editor: QPlainTextEdit | QTextEdit, prompt: str, *,
     editable_before = editor.isReadOnly()
     editor.setReadOnly(True)
     editor.setPlainText("")
-    dark = is_dark(editor)
 
     def _append(kind: str, chunk: str) -> None:
-        think_fmt, body_fmt = _formats(dark)
+        think_fmt, body_fmt = _formats(editor)
         cur = editor.textCursor()
         cur.movePosition(QTextCursor.MoveOperation.End)
         cur.setCharFormat(think_fmt if kind == "reasoning" else body_fmt)
@@ -132,6 +141,3 @@ def stream_into(editor: QPlainTextEdit | QTextEdit, prompt: str, *,
     return worker
 
 
-def is_dark(widget: QWidget) -> bool:
-    """按调色板亮度粗判当前是亮色还是暗色主题(决定思考文字的颜色)。"""
-    return widget.palette().color(widget.palette().ColorRole.Window).lightnessF() < 0.5

@@ -99,6 +99,7 @@ class NovelPlanDialog(QDialog):
         self.edits: dict[str, QPlainTextEdit] = {}
         self.tabs = QTabWidget()
         self._draft_btns: dict[str, WaitingButton] = {}
+        self._save_btns: dict[str, QPushButton] = {}
         for i, (key, name) in enumerate((("outline", "总纲"), ("world", "世界观"),
                                         ("contract", "故事合约"), ("volume", "分卷战略"))):
             page = QWidget()
@@ -112,7 +113,9 @@ class NovelPlanDialog(QDialog):
             btn.clicked.connect(lambda _=False, k=key, n=name: self._draft_section(k, n))
             self._draft_btns[key] = btn
             save_btn = QPushButton("保存")
+            save_btn.setToolTip("把当前内容写入项目")
             save_btn.clicked.connect(lambda _=False, k=key: self._save_section(k))
+            self._save_btns[key] = save_btn
             row.addWidget(btn)
             row.addWidget(save_btn)
             row.addStretch(1)
@@ -318,6 +321,9 @@ class NovelPlanDialog(QDialog):
         self._save_project_meta()          # 先落库,上下文里才有题材/简介
         btn = self._draft_btns[key]
         btn.busy(f"起草{name}中")
+        save_btn = self._save_btns.get(key)
+        if save_btn:
+            save_btn.setEnabled(False)      # 流式期间禁止保存:框里是思考的半截内容
         cid = self.text_combo.currentData() if hasattr(self, "text_combo") else None
         config_id = int(cid) if cid else None
         editor = self.edits[key]
@@ -327,6 +333,8 @@ class NovelPlanDialog(QDialog):
 
         def finished(text: str) -> None:
             btn.idle()
+            if save_btn:
+                save_btn.setEnabled(True)
             try:
                 result = novel_pipe.persist_draft(self.drama_id, key, text)
             except Exception as exc:  # noqa: BLE001
@@ -338,6 +346,8 @@ class NovelPlanDialog(QDialog):
 
         def failed(msg: str) -> None:
             btn.idle()
+            if save_btn:
+                save_btn.setEnabled(True)
             editor.setPlainText("")     # 别把思考过程留在框里冒充结果
             err(f"{name}起草失败:{msg[:160]}")
 

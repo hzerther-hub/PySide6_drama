@@ -91,7 +91,9 @@ class WaitingButton(QPushButton):
             self._lay.addWidget(self._spin)
         self._spin.start(text)
         if text:
-            self._lay.addWidget(QLabel(f" {text}"))
+            lab = QLabel(f" {text}")
+            lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            self._lay.addWidget(lab)
         self.setText("")
 
     def idle(self):
