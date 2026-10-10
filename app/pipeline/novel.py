@@ -651,11 +651,13 @@ def check_novel_redlines(drama_id: int) -> list[int]:
     if not d:
         return NOVEL_REQUIRED_STEPS
     meta = db.jload(d["novel_meta"], {}) or {}
+    # 简介 / 题材 由项目设置写进 dramas.metadata,不在 novel_meta 里
+    proj = db.jload(d["metadata"], {}) or {}
     world = meta.get("world") or {}
     contract = meta.get("contract") or {}
     missing: list[int] = []
     # 1 项目设定:标题 + 简介
-    if not (d["title"] or "").strip() or not (meta.get("intro") or "").strip():
+    if not (d["title"] or "").strip() or not (proj.get("intro") or "").strip():
         missing.append(1)
     # 2 总纲
     if not (d["novel_outline"] or "").strip():
@@ -704,6 +706,148 @@ def missing_steps_text(drama_id: int) -> str:
     if not missing:
         return ""
     return "、".join(f"{s}({STEP_NAMES.get(s, '')})" for s in missing)
+
+
+SECTION_SPEC: dict[str, dict] = {
+    "outline": {
+        "field": "novel_outline", "name": "总纲", "fmt": "plain",
+        "spec": ("800-1500 字全文总纲:一句话主题、核心冲突、主角目标与阻力、"
+                 "三幕递进、结局走向。直接输出正文,不要 JSON、不要标题行、不要解释。"),
+    },
+    "world": {
+        "field": "novel_world", "name": "世界观", "fmt": "json",
+        "spec": ('JSON:{"text":"800-1500 字世界观全文","structured":{"era":"时代背景",'
+                 '"location":"主要地点","power_system":"力量/能力体系",'
+                 '"factions":[{"name":"势力名","desc":"一句话"}],"note":"补充"}}\n'
+                 "text 是可直接阅读的全文;structured 是给写作红线门控用的结构化字段,两者都要填。"),
+    },
+    "contract": {
+        "field": "novel_contract", "name": "故事合约", "fmt": "json",
+        "spec": ('JSON:{"text":"600-1200 字故事合约全文","structured":{"pov":"first|second|'
+                 'third_limited|third_omni","tones":["基调1","基调2"],'
+                 '"rules":["硬约束1","硬约束2"],"word_range":[1800,2600],"note":"补充"}}\n'
+                 "pov 只能取 first/second/third_limited/third_omni 之一;tones 与 rules 都不能是空数组。"),
+    },
+    "volume": {
+        "field": "novel_volume", "name": "分卷战略", "fmt": "json",
+        "spec": ('JSON:{"text":"分卷说明(markdown,可为空)","chapters":['
+                 '{"title":"卷名","range":"1-30","goal":"本卷目标",'
+                 '"key_events":["关键事件"],"cliffhanger":"卷末钩子"}]}'),
+    },
+}
+
+
+def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict:
+    """AI 起草某个策划板块并**直接落库**。
+
+    与参考项目的差别要说清楚:那边的 novel_planner 是带工具的 Mastra Agent,
+    提示词写「完成后调用 save_novel_settings 保存」,工具会真的写库;本仓的 runner
+    是单次调用、没有工具,照抄这句会让模型返回 `<tool_call>` 文本,什么都不会发生
+    (实测总纲起草返回的是 read_novel_context 的工具调用片段)。
+
+    所以这里把两件事自己做掉:
+      1. 上下文**直接内联**进提示词(替代 read_novel_context 工具);
+      2. 模型**直接返回内容**,由本函数解析并写库(替代 save_novel_settings 工具)。
+    """
+    spec = SECTION_SPEC.get(key)
+    if not spec:
+        raise RuntimeError(f"未知板块:{key}")
+    ctx = _novel_settings_ctx(drama_id)
+    d = db.q1("SELECT total_episodes, novel_chapters FROM dramas WHERE id=?", (drama_id,))
+    chapters = db.jload(d["novel_chapters"], []) or []
+    intended = len(chapters) or int(d["total_episodes"] or 0)
+    prompt = f"""请为下面这本书起草「{spec['name']}」。
+
+【项目上下文】
+{ctx}
+
+计划章数:{intended or '未定'}
+
+【输出格式】
+{spec['spec']}
+
+只输出这一份内容本身,不要任何前后说明。"""
+    raw = runner.run_agent("novel_planner", prompt, temperature=0.6, config_id=config_id,
+                           system=_draft_system(spec["name"]))
+    raw = _strip_tool_calls(raw or "").strip()
+    if not raw:
+        raise RuntimeError(f"{spec['name']}起草返回空内容")
+    text, structured = _parse_draft(raw, spec)
+    if not text:
+        raise RuntimeError(f"{spec['name']}起草结果无法解析(原始输出前 120 字:{raw[:120]})")
+    ts = db.now()
+    extra = ""
+    if key == "volume" and structured:
+        payload = [structured] if isinstance(structured, list) else (structured.get("chapters") or [])
+        if payload:
+            db.ex("UPDATE dramas SET novel_chapters=?, updated_at=? WHERE id=?",
+                  (json.dumps(payload, ensure_ascii=False), ts, drama_id))
+            extra = f",已重排 {len(payload)} 章计划"
+    db.ex(f"UPDATE dramas SET {spec['field']}=?, updated_at=? WHERE id=?",
+          (text, ts, drama_id))
+    if isinstance(structured, dict) and key in ("world", "contract"):
+        row = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+        meta = db.jload(row["novel_meta"], {}) if row else {}
+        meta[key] = structured
+        db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+              (json.dumps(meta, ensure_ascii=False), ts, drama_id))
+        extra = ",已写入结构化字段(写作门控会读)"
+    return {"key": key, "field": spec["field"], "text": text, "extra": extra}
+
+
+def _parse_draft(raw: str, spec: dict) -> tuple[str, object]:
+    """按板块格式解析模型输出 → (可直接阅读的全文, 结构化部分)。"""
+    if spec["fmt"] == "plain":
+        return raw.strip(), None
+    data = runner.extract_json(raw)
+    if isinstance(data, dict):
+        text = str(data.get("text") or "").strip()
+        structured = data.get("structured")
+        if structured is None:
+            structured = {k: v for k, v in data.items() if k != "text"} or None
+        return (text or json.dumps(data, ensure_ascii=False)), structured
+    if isinstance(data, list):                       # volume 直接给数组
+        lines = [f"### {c.get('title') or ''}(第 {c.get('range') or ''}章)" for c in data
+                 if isinstance(c, dict)]
+        return ("\n".join(lines) if lines else ""), data
+    return raw.strip(), None
+
+TOOL_CALL_RE = re.compile(r"<​?tool_call>.*?(?:</​?tool_call>|$)", re.S)
+
+
+def _strip_tool_calls(raw: str) -> str:
+    """剥掉模型把工具调用当文本吐出来的片段(兜底;真正的修法是换无工具系统提示)。"""
+    cleaned = TOOL_CALL_RE.sub("", raw).strip()
+    if cleaned and cleaned != raw.strip():
+        return cleaned
+    if "tool_call" in raw:
+        m = re.search(r'"content"\s*:\s*"((?:[^"\]|\.)*)"', raw)
+        if m and len(m.group(1)) > 40:
+            try:
+                return m.group(1).encode().decode("unicode_escape")
+            except Exception:  # noqa: BLE001
+                return m.group(1)
+    return raw.strip()
+
+
+def _draft_system(section_name: str) -> str:
+    """起草用的**无工具**系统提示词。
+
+    不用 workspace/prompts/novel_planner.*.md:那套提示词假设 Agent 拥有
+    read_novel_context / save_novel_settings 等工具,并明确要求「只输出工具调用,
+    不要输出规划文本」。本仓 runner 是单次调用、没有工具,照用只会拿到一串
+    tool_call 文本(实测「总纲」起草返回的就是这个)。
+    """
+    return (
+        "你是资深网文主编,负责长篇的开书规划。\n\n"
+        "本次只起草一个板块,并**直接输出内容本身**。\n"
+        "你没有工具,也**绝不要**输出 tool_call 之类的东西;不要复述任务要求,不要解释。\n\n"
+        "硬约束:\n"
+        "- 内容必须与用户消息给出的题材/简介/文风/总纲一致,不凭空引入无关设定\n"
+        "- 章节名、人物名、专有名词要具体可执行,不写「若干」「一些」这类空话\n"
+        f"- 只输出「{section_name}」这一块的内容"
+    )
+
 
 
 # ── 批量建集(对齐原版 POST /episodes/bulk) ──

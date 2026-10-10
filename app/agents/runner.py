@@ -42,10 +42,17 @@ def extract_json(text: str) -> dict | list | None:
 def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
               json_output: bool = False, temperature: float = 0.7,
               config_id: int | None = None,
-              image_urls: list[str] | None = None) -> str:
+              image_urls: list[str] | None = None,
+              system: str | None = None) -> str:
+    """system=None 时用 workspace/prompts/<type>.<lang>.md。
+
+    传入 system 可整体覆盖:workspace 里的提示词是给**带工具的 Mastra Agent** 写的
+    (例如 novel_planner.md 里写着「只输出工具调用,不要输出规划文本」),
+    本仓 runner 是单次调用、没有工具,不覆盖就会拿到一串 <tool_call> 文本。
+    """
     if lang is None:
         lang = db.get_setting("content_language", "zh")
-    system = prompts.load_prompt(agent_type, lang)
+    system = system if system is not None else prompts.load_prompt(agent_type, lang)
     return text_client.chat(
         user_prompt, system=system, temperature=temperature,
         json_mode=json_output, config_id=config_id, image_urls=image_urls)

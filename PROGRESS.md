@@ -861,3 +861,37 @@ retry_at 直接跟随、每次提交都过串行门。
 「小说设定」按钮一开始加了 `v-if work_type=='novel'`,短剧/漫画项目在详情页头部就看不到入口。
 策划与设定(总纲 / 世界观 / 故事合约 / 卷战略 / 章节计划 / 主要角色)对各类创作目标都有用,改为常驻。
 参考项目同步去掉 `v-if="isNovel"`(commit `3e2c7c0`)。
+
+## 2026-10-09(第 35 轮:AI 起草空结果修复 + 生成顺序显式化 + 闸门简介读错字段)
+> 用户反馈:「AI 起草没有看到结果」「其它的类似效果都要试一下」「生成顺序有先后吗?」
+### 1. AI 起草空结果的根因:提示词是给「带工具的 Agent」写的
+`workspace/prompts/novel_planner.md`(以及 comic_board / extractor / novel_writer /
+prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
+里面写着「**只输出工具调用,不要输出规划文本**」「调用 save_novel_settings 保存」
+「题材/简介由 read_novel_context 提供」。
+本仓 `runner` 是**单次调用、没有工具**,于是模型照着输出工具调用文本:
+实测「总纲」起草返回的是 `<tool_call> read_novel_context {...}` / `save_novel_settings {...}`,
+既没有正文,也没落库,`_reload_tabs()` 再读回来自然是空的。
+
+修法:
+- `runner.run_agent()` 增加 `system=` 覆盖参数(默认行为不变);
+- 新增 `novel.draft_section(drama_id, key)`:把上下文**直接内联**进提示词、要求模型
+  **直接返回内容**,由本函数解析并写库 —— 用本仓的方式替代那两个工具;
+- `_draft_system()` 给起草配**无工具**系统提示;
+- `_strip_tool_calls()` 兜底剥掉 `<tool_call>` 片段,并尝试抢救其中的 `content`。
+- 四个板块按 **总纲 → 世界观 → 故事合约 → 分卷战略** 实测全部产出:
+  1386 / 1034 / 886 / 182 字,世界观与故事合约同时写进 `novel_meta.world` / `.contract`
+  结构化字段(pov=first、tones=['轻松吐槽','现实经营']、era/location 齐),写作门控读得到。
+
+### 2. 生成顺序显式化
+顺序同参考项目向导(`NOVEL_REQUIRED_STEPS = [1,2,3,4,5,7]`):
+**项目设定 → 总纲 → 世界观 → 故事合约 → 分卷战略 → 章节计划 → 主要角色**。
+- 按钮文案带步号:「✨ AI 起草」/「✨ AI 起草 第 2 步」…;
+- `missing_prereq()` 按依赖链拦截:世界观缺总纲、故事合约缺总纲+世界观、分卷战略缺总纲,
+  未满足时提示「请先生成「X」再起草 Y」而不是让 AI 白跑。
+
+### 3. 闸门第 1 步读错字段(会永久卡死小说写作)
+`check_novel_redlines()` 从 `novel_meta.intro` 读简介,但项目设置写的是 `metadata.intro`
+——**两个不同的字段**,所以第 1 步「项目设定」永远判缺,小说项目将永远无法通过写作闸门。
+已改为读 `metadata`(与 `_novel_settings_ctx` 一致)。修复后项目 1 的闸门从
+「缺 1」变为「齐」。

@@ -16,6 +16,28 @@ from .braille import WaitingButton
 from .toast import err, ok
 
 
+# 策划板块的生成顺序与前置依赖
+# 顺序同参考项目向导:项目设定 → 总纲 → 世界观 → 故事合约 → 分卷战略 → 章节计划 → 主要角色
+# (对齐原版 NOVEL_REQUIRED_STEPS = [1,2,3,4,5,7],6 分卷战略为可选但章数多时需要)
+PREREQ: dict[str, list[str]] = {
+    "outline": [],          # 地基:没有总纲,后面都写不出来
+    "world": ["outline"],   # 世界观要在总纲划定的设定边界内展开
+    "contract": ["outline", "world"],   # 叙事视角/调性/硬约束要匹配世界观
+    "volume": ["outline"],  # 分卷是把总纲切成卷,依赖总纲与计划章数
+}
+PREREQ_NAME = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
+
+
+def missing_prereq(drama_id: int, key: str) -> list[str]:
+    """返回该板块尚未完成的前置板块名。"""
+    out = []
+    for p in PREREQ.get(key, []):
+        row = db.q1(f"SELECT novel_{p} FROM dramas WHERE id=?", (drama_id,))
+        if not (row and (row[0] or "").strip()):
+            out.append(PREREQ_NAME[p])
+    return out
+
+
 class NovelPlanDialog(QDialog):
     """策划与设定:总纲/世界观/合约/卷战略 可查看编辑保存 + 章节计划 + AI 封面。"""
 
@@ -77,8 +99,8 @@ class NovelPlanDialog(QDialog):
         self.edits: dict[str, QPlainTextEdit] = {}
         self.tabs = QTabWidget()
         self._draft_btns: dict[str, WaitingButton] = {}
-        for key, name in (("outline", "总纲"), ("world", "世界观"),
-                          ("contract", "故事合约"), ("volume", "分卷战略")):
+        for i, (key, name) in enumerate((("outline", "总纲"), ("world", "世界观"),
+                                        ("contract", "故事合约"), ("volume", "分卷战略"))):
             page = QWidget()
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 8, 0, 0)
@@ -86,7 +108,7 @@ class NovelPlanDialog(QDialog):
             edit = QPlainTextEdit(d[f"novel_{key}"] or "")
             edit.setMinimumHeight(260)
             self.edits[key] = edit
-            btn = WaitingButton("✨ AI 起草")
+            btn = WaitingButton("✨ AI 起草" + (f"第 {i + 1} 步" if i else ""))
             btn.clicked.connect(lambda _=False, k=key, n=name: self._draft_section(k, n))
             self._draft_btns[key] = btn
             save_btn = QPushButton("保存")
@@ -94,7 +116,10 @@ class NovelPlanDialog(QDialog):
             row.addWidget(btn)
             row.addWidget(save_btn)
             row.addStretch(1)
-            row.addWidget(W.muted("AI 起草会覆盖当前内容,先保存项目设定(题材/简介)以便 Agent 读取"))
+            self._order_lab = self._order_lab if hasattr(self, "_order_lab") else {}
+            self._order_lab[key] = W.muted("")
+            row.addWidget(self._order_lab[key])
+            row.addWidget(W.muted("AI 起草会覆盖当前内容"))
             lay.addLayout(row)
             lay.addWidget(edit, 1)
             self.tabs.addTab(page, name)
@@ -253,36 +278,32 @@ class NovelPlanDialog(QDialog):
                    "volume": ("novel_volume", "volume")}
 
     def _draft_section(self, key: str, name: str):
-        """调用 novel_planner Agent 起草该板块(已落库项目设定供其读取)。"""
+        """AI 起草该板块并直接落库(见 novel.draft_section 的说明)。"""
         from ..core.preflight import ensure_ready
         if not ensure_ready("text", None):
             return
-        self._save_project_meta()          # 先落库,Agent 通过 read_novel_context 读题材/简介
-        d = db.q1("SELECT * FROM dramas WHERE id=?", (self.drama_id,))
-        chapters = db.jload(d["novel_chapters"], []) or []
-        intended = len(chapters) or int(d["total_episodes"] or 0)
-        ch_part = f",计划共 {intended} 章" if intended else ""
-        field, section = self.SECTION_MAP[key]
-        hint = ""
-        if key == "world":
-            hint = "。保存时必须同时传 structured:era/location/power_system/factions[{name,desc}]/note"
-        elif key == "contract":
-            hint = "。保存时必须同时传 structured:pov/tones[]/rules[]/word_range:[min,max]/note"
+        miss = missing_prereq(self.drama_id, key)
+        if miss:
+            warn(f"请先生成「{'、'.join(miss)}」再起草{name}")
+            return
+        self._save_project_meta()          # 先落库,上下文里才有题材/简介
         btn = self._draft_btns[key]
-        btn.busy("起草中")
-        msg = f"请起草本书的{name}(section={section}{ch_part}),完成后调用 save_novel_settings 保存{hint}。"
+        btn.busy(f"起草{name}中")
+        cid = self.text_combo.currentData() if hasattr(self, "text_combo") else None
+        config_id = int(cid) if cid else None
 
         def job(tid):
-            from ..agents import runner
-            return runner.run_agent("novel_planner", msg)
+            from ..pipeline import novel as novel_pipe
+            return novel_pipe.draft_section(self.drama_id, key, config_id=config_id)
 
         def done(tid, result, error):
             btn.idle()
             if error:
-                err(error)
+                err(f"{name}起草失败:{str(error)[:160]}")
                 return
             self._reload_tabs()
-            ok(f"{name}已生成")
+            self._update_plan_stat()
+            ok(f"{name}已生成并保存{(result or {}).get('extra', '')}")
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
 
