@@ -926,3 +926,12 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
 已实现 `_post_with_negative()`:上游回「不支持 negative_prompt」时**剥离后自动重试一次**
 (顶层 / extra_body / 深层扫描三处),对齐原版 generation.ts 的做法。三个 provider 分支全部接入。
 实测项目 4 封面生成成功,/static/images/cover_4.png 落盘 1.4MB。
+
+### 5. 流式显示的两处副作用修复
+- **字体变化**:`_formats()` 曾用 `QFont()` 取消斜体,Qt 把空字体族解析成手写体(script fallback),
+  整段正文变成花体。改为从编辑器自身字体派生、只切 italic,思考与正文都只改颜色不改字体族。
+- **保存不了**:流式期间编辑器 `setReadOnly(True)`,但「保存」按钮仍可点 —— 点了会把**思考过程的
+  半截内容**写进 `novel_contract`。现在起草期间禁用该板块的保存按钮,成功/失败后恢复。
+- 另修:`WaitingButton` 忙碌文案被截断(只剩「起」),补 `QSizePolicy` 让标签按内容撑开。
+- 附带发现:合约起草的思考过程很长(实测 4771 字思考 + 1217 字正文),总耗时超过 1 分钟,
+  期间界面上只有灰字在动、没有取消入口 —— 后续应加「停止生成」。
