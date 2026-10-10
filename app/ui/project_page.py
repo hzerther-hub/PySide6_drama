@@ -583,7 +583,7 @@ class ProjectPage(QWidget):
         self.promo_btn = QPushButton("◈ " + tr("promo_copy"))
         self.promo_btn.clicked.connect(self._promo)
         head.addWidget(self.promo_btn)
-        # 小说设定入口(从制作台原文页移到这里,策划是项目级的事,不该藏在单集页里)
+        # 策划与设定入口(从制作台原文页移到这里,策划是项目级的事,不该藏在单集页里)
         self.novel_btn = QPushButton("⚙ " + tr("novel_settings"))
         self.novel_btn.setToolTip(tr("novel_settings_tip"))
         self.novel_btn.clicked.connect(self._open_novel_settings)
@@ -683,8 +683,6 @@ class ProjectPage(QWidget):
             return
         self._drama = dict(d)
         self.title.setText(d["title"])
-        # 小说设定是小说线项目的入口,其它创作目标不显示
-        self.novel_btn.setVisible((d["work_type"] or "") == "novel")
         nc = db.q1("SELECT COUNT(*) c FROM characters WHERE drama_id=?", (drama_id,))["c"]
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama_id,))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]
