@@ -267,9 +267,45 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.theme_combo)
         trow.addStretch(1)
         f.addRow(tr("theme"), theme_box)
+
+        # 界面字体:系统字体 + 项目打包字体(片头那批也可选作正文)
+        from PySide6.QtGui import QFontDatabase
+        font_box = QWidget()
+        frow = QHBoxLayout(font_box)
+        frow.setContentsMargins(0, 0, 0, 0)
+        self.font_combo = QComboBox()
+        self.font_combo.setMinimumWidth(240)
+        self.font_combo.addItem(tr("font_follow_system"), "")
+        from ..core.theme import UI_FONT_CANDIDATES
+        for fam in UI_FONT_CANDIDATES:
+            self.font_combo.addItem(fam, fam)
+        have = set(QFontDatabase.families())
+        for fam in sorted(f for f in have if f not in UI_FONT_CANDIDATES):
+            self.font_combo.addItem(fam, fam)
+        j = self.font_combo.findData(db.get_setting("ui_font", ""))
+        self.font_combo.setCurrentIndex(max(0, j))
+        self.font_combo.currentIndexChanged.connect(self._change_font)
+        frow.addWidget(self.font_combo)
+        apply_btn = QPushButton(tr("font_preview"))
+        apply_btn.clicked.connect(self._change_font)
+        frow.addWidget(apply_btn)
+        frow.addStretch(1)
+        f.addRow(tr("ui_font"), font_box)
+        f.addRow("", W.muted(tr("ui_font_note")))
         lay.addWidget(box)
         lay.addStretch(1)
         return w
+
+    def _change_font(self):
+        """切换界面字体,立即生效(重贴 QSS + 重设应用默认字体)。"""
+        fam = self.font_combo.currentData() or ""
+        db.set_setting("ui_font", fam)
+        from PySide6.QtWidgets import QApplication
+        from ..core.theme import apply_theme, db_get_setting
+        mode = db.get_setting("theme", "light")
+        if mode == "system":
+            mode = "light"
+        apply_theme(QApplication.instance(), mode, preferred=fam)
 
     def _pick_lang(self, lang: str):
         for code, b in self.lang_btns.items():

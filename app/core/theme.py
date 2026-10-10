@@ -257,8 +257,24 @@ QLabel#pipeProgLabel[done="1"] { color: #8b909a; }
 """
 
 
+# 片头标题卡字体(楷书 / 毛笔 / 行书等)。它们**只供 ffmpeg drawtext 与片头预览使用**,
+# 不该参与界面正文字体回退 —— 否则 QSS 里的 -apple-system 在 Windows 上解析不到时,
+# Qt 会挑中这些花体,把整段正文变成手写体。
+TITLE_CARD_FONTS = {
+    "SourceHanSansSC-Bold.otf", "LXGWWenKai-Regular.ttf", "MaShanZheng-Regular.ttf",
+    "ZCOOLXiaoWei-Regular.ttf", "ZCOOLKuaiLe-Regular.ttf", "ZCOOLQingKeHuangYou-Regular.ttf",
+    "LongCang-Regular.ttf", "LiuJianMaoCao-Regular.ttf", "ZhiMangXing-Regular.ttf",
+}
+
+# 界面正文字体候选(按优先级;都是系统自带,不依赖打包字体)
+UI_FONT_CANDIDATES = [
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "WenQuanYi Micro Hei", "SimHei", "Segoe UI",
+]
+
+
 def load_bundled_fonts(app) -> list[str]:
-    """注册 assets/fonts/ 下的打包字体(分发用);原版 drama 不内置字体,返回已注册 family。"""
+    """注册 assets/fonts/ 下的打包字体(片头标题卡用);返回已注册 family。"""
     from pathlib import Path
     from PySide6.QtGui import QFontDatabase
     fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
@@ -270,6 +286,26 @@ def load_bundled_fonts(app) -> list[str]:
                 fams = QFontDatabase.applicationFontFamilies(fid)
                 families += fams
     return families
+
+
+def resolve_ui_family(preferred: str = "") -> str:
+    """挑一个**确实装在系统里**的界面字体族。
+
+    QSS 里的 '-apple-system' 在 Windows 上不存在,Qt 会继续回退;若此时片头花体也在字体库里,
+    就会把正文渲染成手写/楷体。这里先按用户偏好、再按候选列表解析成一个真实族名,
+    由 apply_theme 显式设成应用默认字体,QSS 的 `*` 规则也用这个具体族名。
+    """
+    from PySide6.QtGui import QFontDatabase
+    installed = set(QFontDatabase.families())
+    if preferred:
+        # 允许用户直接填族名,也允许从下拉里选「跟随系统」这类空值
+        for name in (preferred, *UI_FONT_CANDIDATES):
+            if name and name in installed:
+                return name
+    for name in UI_FONT_CANDIDATES:
+        if name in installed:
+            return name
+    return ""
 
 
 LIGHT_QSS = """
@@ -394,7 +430,16 @@ QToolTip { background: #26282e; color: #e8eaed; border: 1px solid #3a3d46; paddi
 """ + ASSET_QSS_DARK + SIDEBAR_QSS_DARK
 
 
-def apply_theme(app, mode: str = "light") -> None:
+def db_get_setting(key: str, default: str = "") -> str:
+    """取全局设置(theme 不反向依赖 db 模块,延迟导入避免循环)。"""
+    try:
+        from .db import get_setting
+        return get_setting(key, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
     from PySide6.QtGui import QColor, QPalette
     dark = mode == "dark"
@@ -412,4 +457,13 @@ def apply_theme(app, mode: str = "light") -> None:
     pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
     pal.setColor(QPalette.Link, QColor("#fdba74" if dark else "#f97316"))
     app.setPalette(pal)
-    app.setStyleSheet(DARK_QSS if mode == "dark" else LIGHT_QSS)
+    qss = DARK_QSS if mode == "dark" else LIGHT_QSS
+    family = resolve_ui_family(preferred or db_get_setting("ui_font", ""))
+    if family:
+        from PySide6.QtGui import QFont
+        f = QFont(family)
+        f.setPointSize(app.font().pointSize() or 9)
+        app.setFont(f)
+        # QSS 的 `*` 用具体族名,别再让 Qt 自由回退挑到片头花体
+        qss = qss.replace(FONT_STACK, f"'{family}'", 1)
+    app.setStyleSheet(qss)
